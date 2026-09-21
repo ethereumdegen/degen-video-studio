@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dvs studio</title>
+    <link rel="stylesheet" href="app.css" />
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#tl-scroller">Skip to the timeline</a>
+
+    <header class="topbar">
+      <h1>dvs studio</h1>
+
+      <dl class="facts" id="facts">
+        <div class="fact"><dt>Project</dt><dd id="fact-project">—</dd></div>
+        <div class="fact"><dt>Sequence</dt><dd id="fact-sequence">—</dd></div>
+        <div class="fact"><dt>Size</dt><dd id="fact-size">—</dd></div>
+        <div class="fact"><dt>Rate</dt><dd id="fact-fps">—</dd></div>
+        <div class="fact"><dt>Duration</dt><dd id="fact-duration">—</dd></div>
+      </dl>
+
+      <!-- One status line for everything the window wants to say back: command results,
+           snaps, warnings, selection. role="status" is an implicit aria-live="polite". -->
+      <p class="status" id="status" role="status">Starting up.</p>
+
+      <p class="conn">
+        <span class="conn-dot" id="conn-dot" aria-hidden="true"></span>
+        <span id="conn-text">Connecting…</span>
+      </p>
+
+      <div class="topbar-actions">
+        <button type="button" id="btn-text"><span aria-hidden="true">≡</span> Read as text</button>
+        <button type="button" id="btn-help"><span aria-hidden="true">?</span> Keyboard help</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="stage" aria-labelledby="stage-h">
+        <h2 id="stage-h" class="visually-hidden">Viewport</h2>
+        <div class="frame-well">
+          <!-- alt is regenerated on every seek from the snapshot, never from the picture:
+               it names the frame, the timecode and what is on screen at that instant. -->
+          <img id="frame" class="frame" alt="Viewport: no frame yet." src="" decoding="async" />
+        </div>
+
+        <div class="transport" role="group" aria-label="Transport">
+          <button type="button" id="t-home"><span aria-hidden="true">⏮</span> Start</button>
+          <button type="button" id="t-back-sec"><span aria-hidden="true">⏪</span> −1 s</button>
+          <button type="button" id="t-back-frame"><span aria-hidden="true">◀</span> −1 f</button>
+          <button type="button" id="t-play" aria-pressed="false">
+            <span aria-hidden="true" id="t-play-glyph">▶</span> <span id="t-play-text">Play</span>
+          </button>
+          <button type="button" id="t-fwd-frame"><span aria-hidden="true">▶</span> +1 f</button>
+          <button type="button" id="t-fwd-sec"><span aria-hidden="true">⏩</span> +1 s</button>
+          <button type="button" id="t-end"><span aria-hidden="true">⏭</span> End</button>
+
+          <div class="scrub">
+            <label for="scrub">Playhead</label>
+            <!-- A native range: keyboard- and AT-native, announces itself, and carries the
+                 timecode in aria-valuetext so it reads "00:00:42:14" and not "1274". -->
+            <input id="scrub" type="range" min="0" max="0" step="1" value="0" aria-valuetext="00:00:00:00" />
+          </div>
+
+          <!-- The readout is deliberately not a live region: the range announces the same
+               value as you move it, and two voices saying it is one too many. -->
+          <p class="timecode" id="timecode" aria-live="off">
+            <span class="visually-hidden">Timecode </span><span id="timecode-text">00:00:00:00</span>
+            <span class="timecode-frame" id="frame-text">frame 0</span>
+          </p>
+        </div>
+      </section>
+
+      <section class="timeline" aria-labelledby="timeline-h">
+        <div class="section-head">
+          <h2 id="timeline-h">Timeline</h2>
+          <div class="zoom" role="group" aria-label="Zoom">
+            <button type="button" id="zoom-out"><span aria-hidden="true">−</span> Zoom out</button>
+            <button type="button" id="zoom-in"><span aria-hidden="true">+</span> Zoom in</button>
+            <button type="button" id="zoom-fit">Fit</button>
+          </div>
+        </div>
+
+        <div class="tl-scroller" id="tl-scroller">
+          <div class="tl-content" id="tl-content">
+            <div class="tl-ruler" id="tl-ruler" aria-hidden="true"></div>
+            <div class="tl-markers" id="tl-markers" role="group" aria-label="Markers"></div>
+            <div class="tl-grid" id="tl-grid" role="grid" aria-label="Timeline" aria-readonly="true"></div>
+            <div class="tl-playhead" id="tl-playhead" aria-hidden="true"></div>
+          </div>
+        </div>
+        <p class="hint" id="tl-hint">
+          Arrow keys move between clips and tracks, Enter or Space selects, ctrl+scroll zooms.
+        </p>
+      </section>
+
+      <div class="side">
+        <section class="panel activity" aria-labelledby="activity-h">
+          <h2 id="activity-h">Activity</h2>
+          <!-- The live region is this one sentence, not the list. Marking the whole feed
+               live makes a screen reader re-read twenty rows on every op, which is worse
+               than silence; one composed sentence per entry is the whole point. -->
+          <p class="feed-live" id="activity-live" aria-live="polite" aria-atomic="true"></p>
+          <ol class="feed" id="activity-list" aria-live="off"></ol>
+        </section>
+
+        <section class="panel lint" aria-labelledby="lint-h">
+          <div class="section-head">
+            <h2 id="lint-h">Lint</h2>
+            <button type="button" id="btn-lint">Run lint</button>
+          </div>
+          <div id="lint-body"><p class="empty">Not run yet.</p></div>
+        </section>
+      </div>
+
+      <section class="console" aria-labelledby="console-h">
+        <h2 id="console-h" class="visually-hidden">Console</h2>
+        <form id="console-form" autocomplete="off">
+          <label for="console-input">Command</label>
+          <input
+            id="console-input"
+            name="line"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            aria-describedby="console-hint"
+            placeholder="clip.split --target '#intro' --at 42.5"
+          />
+          <button type="submit">Run</button>
+          <button type="button" id="btn-undo">Undo</button>
+          <button type="button" id="btn-redo">Redo</button>
+        </form>
+        <p class="hint" id="console-hint">
+          Ops take the same flags as the CLI, for example
+          <code>clip.split --target '#intro' --at 42.5</code>. Results, snaps and warnings
+          go to the status line and the activity feed.
+        </p>
+      </section>
+    </main>
+
+    <dialog id="dlg-help" aria-labelledby="help-h">
+      <h2 id="help-h">Keyboard</h2>
+      <dl class="keys">
+        <div><dt><kbd>space</kbd></dt><dd>play or pause</dd></div>
+        <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>step one frame</dd></div>
+        <div><dt><kbd>shift</kbd>+<kbd>←</kbd> <kbd>→</kbd></dt><dd>step one second</dd></div>
+        <div><dt><kbd>home</kbd> <kbd>end</kbd></dt><dd>first or last frame</dd></div>
+        <div><dt><kbd>u</kbd></dt><dd>undo</dd></div>
+        <div><dt><kbd>r</kbd></dt><dd>redo</dd></div>
+        <div><dt><kbd>l</kbd></dt><dd>run lint</dd></div>
+        <div><dt><kbd>/</kbd></dt><dd>focus the command console</dd></div>
+        <div><dt><kbd>?</kbd></dt><dd>this help</dd></div>
+        <div><dt><kbd>escape</kbd></dt><dd>close a dialog and return focus to what opened it</dd></div>
+      </dl>
+      <h3>Inside the timeline</h3>
+      <dl class="keys">
+        <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>previous or next clip on this track</dd></div>
+        <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>the track above or below</dd></div>
+        <div><dt><kbd>home</kbd> <kbd>end</kbd></dt><dd>first or last cell of this track</dd></div>
+        <div><dt><kbd>ctrl</kbd>+<kbd>home</kbd> <kbd>end</kbd></dt><dd>first or last track</dd></div>
+        <div><dt><kbd>enter</kbd> <kbd>space</kbd></dt><dd>select the clip under focus</dd></div>
+        <div><dt><kbd>ctrl</kbd>+scroll</dt><dd>zoom around the pointer</dd></div>
+      </dl>
+      <p class="hint">
+        The timeline is a grid, so while focus is inside it <kbd>home</kbd> and
+        <kbd>end</kbd> mean “this row” rather than “this sequence”.
+      </p>
+      <form method="dialog"><button type="submit" id="help-close">Close</button></form>
+    </dialog>
+
+    <dialog id="dlg-text" aria-labelledby="text-h">
+      <h2 id="text-h">The window as text</h2>
+      <p class="hint">
+        Everything above, as lines. Select and copy it, or run <code>dvs-studio --describe</code>
+        for the same thing without a window.
+      </p>
+      <pre id="describe-out" tabindex="0" aria-label="The window as text"></pre>
+      <form method="dialog"><button type="submit" id="text-close">Close</button></form>
+    </dialog>
+  </body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "dvs-studio",
+  "version": "0.1.0",
+  "identifier": "studio.degen.dvs",
+  "build": {
+    "frontendDist": "../dvs-studio/ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "dvs studio",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "focus": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' dvsframe: http://dvsframe.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "assetProtocol": {
+        "enable": false
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "category": "Video",
+    "shortDescription": "Watch a degen-video-studio project being edited",
+    "longDescription": "A window onto a degen-video-studio project: the composited viewport, the timeline, and the op journal streaming past as an agent edits the same document you are looking at."
+  }
+}

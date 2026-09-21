@@ -1,0 +1,257 @@
+{
+  "_comment": [
+    "Development fixture for bridge.js when the UI runs outside Tauri (plain browser, axe audit, CI).",
+    "Shape is exactly dvs_studio::state::Snapshot + Vec<Finding> as serde emits them: camelCase keys,",
+    "times as exact rational seconds ('3003/250'), fps as a rational string, ids as opaque strings.",
+    "Every position below is frame-exact on a 30000/1001 grid: t = frame * 1001 / 30000, reduced.",
+    "frames 0 60 240 360 1274 1800 1920 3300 3540 3600 -> 00:00:00:00 02:00 08:00 12:00 42:14 1:00:00 1:04:00 1:50:00 1:58:00 2:00:00",
+    "The 'announce' strings are the ones Rust composes; they are written out here verbatim so the",
+    "fallback exercises the same code path as the real bridge instead of a JavaScript re-derivation."
+  ],
+  "snapshot": {
+    "projectName": "promo",
+    "root": "/home/andy/video/promo",
+    "sequence": "seq_main",
+    "sequenceName": "main",
+    "size": [1920, 1080],
+    "fps": "30000/1001",
+    "duration": "3003/25",
+    "frameCount": 3600,
+    "revision": 12,
+    "scale": 0.5,
+    "useProxy": true,
+    "timeline": {
+      "duration": "3003/25",
+      "fps": "30000/1001",
+      "rows": [
+        {
+          "id": "trk_v2",
+          "name": "V2",
+          "kind": "video",
+          "muted": false,
+          "locked": false,
+          "hidden": false,
+          "clipCount": 2,
+          "announce": "V2, video track, 2 clips"
+        },
+        {
+          "id": "trk_v1",
+          "name": "V1",
+          "kind": "video",
+          "muted": false,
+          "locked": false,
+          "hidden": false,
+          "clipCount": 3,
+          "announce": "V1, video track, 3 clips"
+        },
+        {
+          "id": "trk_a1",
+          "name": "A1",
+          "kind": "audio",
+          "muted": false,
+          "locked": false,
+          "hidden": false,
+          "clipCount": 1,
+          "announce": "A1, audio track, 1 clip"
+        }
+      ],
+      "clips": [
+        {
+          "id": "clp_lower_third",
+          "track": "trk_v2",
+          "row": 0,
+          "start": "1001/500",
+          "end": "1001/125",
+          "label": "lower-third",
+          "announce": "lower-third, title clip on V2, 2.002 to 8.008 seconds, reads Andy Mazzola, degen labs",
+          "source": "title: Andy Mazzola",
+          "kind": "title",
+          "enabled": true,
+          "transition": null,
+          "touched": false
+        },
+        {
+          "id": "clp_end_card",
+          "track": "trk_v2",
+          "row": 0,
+          "start": "11011/100",
+          "end": "3003/25",
+          "label": "end-card",
+          "announce": "end-card, title clip on V2, 110.11 to 120.12 seconds, reads degen labs",
+          "source": "title: degen labs",
+          "kind": "title",
+          "enabled": true,
+          "transition": null,
+          "touched": false
+        },
+        {
+          "id": "clp_intro",
+          "track": "trk_v1",
+          "row": 1,
+          "start": "0/1",
+          "end": "3003/250",
+          "label": "intro",
+          "announce": "intro, video clip on V1, 0 to 12.012 seconds, plays talk.mp4",
+          "source": "talk.mp4",
+          "kind": "video",
+          "enabled": true,
+          "transition": null,
+          "touched": false
+        },
+        {
+          "id": "clp_talk",
+          "track": "trk_v1",
+          "row": 1,
+          "start": "3003/250",
+          "end": "3003/50",
+          "label": "talk",
+          "announce": "talk, video clip on V1, 12.012 to 60.06 seconds, dissolve in over 0.5005 seconds, plays talk.mp4",
+          "source": "talk.mp4",
+          "kind": "video",
+          "enabled": true,
+          "transition": { "kind": "dissolve", "duration": "1001/2000" },
+          "touched": false
+        },
+        {
+          "id": "clp_outro",
+          "track": "trk_v1",
+          "row": 1,
+          "start": "8008/125",
+          "end": "3003/25",
+          "label": "outro",
+          "announce": "outro, video clip on V1, 64.064 to 120.12 seconds, plays outro.mov",
+          "source": "outro.mov",
+          "kind": "video",
+          "enabled": true,
+          "transition": null,
+          "touched": false
+        },
+        {
+          "id": "clp_music",
+          "track": "trk_a1",
+          "row": 2,
+          "start": "0/1",
+          "end": "3003/25",
+          "label": "music",
+          "announce": "music, audio clip on A1, 0 to 120.12 seconds, plays music.mp3",
+          "source": "music.mp3",
+          "kind": "audio",
+          "enabled": true,
+          "transition": null,
+          "touched": false
+        }
+      ],
+      "gaps": [
+        {
+          "row": 1,
+          "track": "trk_v1",
+          "start": "3003/50",
+          "end": "8008/125",
+          "announce": "4.004 seconds of black on V1 from 60.06 to 64.064 seconds"
+        }
+      ],
+      "markers": [
+        { "at": "1001/125", "name": "hook" },
+        { "at": "637637/15000", "name": "pricing" },
+        { "at": "11011/100", "name": "end card" }
+      ]
+    },
+    "activity": [
+      {
+        "seq": 12,
+        "actor": "agent",
+        "op": "transition.add",
+        "summary": "--target #talk --kind dissolve --for 0.5",
+        "at": "11:42:07",
+        "announce": "agent ran transition.add on #talk, dissolve in over 15 frames",
+        "fresh": true
+      },
+      {
+        "seq": 11,
+        "actor": "agent",
+        "op": "clip.split",
+        "summary": "--target #intro --at 42.5",
+        "at": "11:42:03",
+        "announce": "agent ran clip.split on #intro, 42.5 seconds snapped to frame 1274",
+        "fresh": true
+      },
+      {
+        "seq": 10,
+        "actor": "human",
+        "op": "marker.add",
+        "summary": "--at 00:00:08:00 --name hook",
+        "at": "11:41:58",
+        "announce": "you added marker hook at 00:00:08:00",
+        "fresh": false
+      },
+      {
+        "seq": 9,
+        "actor": "ai",
+        "op": "title.lower-third",
+        "summary": "--text 'Andy Mazzola' --sub 'degen labs'",
+        "at": "11:41:40",
+        "announce": "ai ran title.lower-third and created #lower-third on V2",
+        "fresh": false
+      },
+      {
+        "seq": 8,
+        "actor": "agent",
+        "op": "audio.normalize",
+        "summary": "--lufs -14",
+        "at": "11:41:22",
+        "announce": "agent ran audio.normalize to -14 LUFS on 1 clip",
+        "fresh": false
+      }
+    ]
+  },
+  "findings": [
+    {
+      "rule": "low-contrast",
+      "severity": "error",
+      "target": "#lower-third",
+      "detail": "title text measures 2.8:1 against the rendered backdrop at 00:00:04:00; the floor is 4.5:1",
+      "clip": "clp_lower_third"
+    },
+    {
+      "rule": "gap",
+      "severity": "warning",
+      "target": "V1@00:01:00-00:01:04",
+      "detail": "4.004 s of black on V1 between #talk and #outro, covered by no other track",
+      "clip": null
+    }
+  ],
+  "scriptedChange": {
+    "_comment": [
+      "Fired by bridge.js a few seconds after load as a real 'document-changed' event, so the live",
+      "region, the flash and the feed can be observed without Tauri. It trims #outro by 60 frames,",
+      "which is also why a second gap appears on V1."
+    ],
+    "afterMs": 3500,
+    "revision": 13,
+    "touched": ["clp_outro"],
+    "clipPatch": {
+      "clp_outro": {
+        "end": "59059/500",
+        "announce": "outro, video clip on V1, 64.064 to 118.118 seconds, plays outro.mov"
+      }
+    },
+    "addGaps": [
+      {
+        "row": 1,
+        "track": "trk_v1",
+        "start": "59059/500",
+        "end": "3003/25",
+        "announce": "2.002 seconds of black on V1 from 118.118 to 120.12 seconds"
+      }
+    ],
+    "activity": {
+      "seq": 13,
+      "actor": "agent",
+      "op": "clip.trim",
+      "summary": "--target #outro --end 118.1",
+      "at": "11:42:19",
+      "announce": "agent ran clip.trim on #outro, 118.1 seconds snapped to frame 3540",
+      "fresh": true
+    }
+  }
+}

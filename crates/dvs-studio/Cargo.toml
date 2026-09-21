@@ -1,0 +1,48 @@
+[package]
+name = "dvs-studio"
+description = "Native window that shows a degen-video-studio project being edited, by a human or by an agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[[bin]]
+name = "dvs-studio"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+dvs-core.workspace = true
+dvs-media.workspace = true
+dvs-comp.workspace = true
+dvs-audio.workspace = true
+dvs-render.workspace = true
+dvs-inspect.workspace = true
+dvs-mcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+notify.workspace = true
+crossbeam-channel.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+# PNG encoding for the frame protocol, in process: a process spawn per scrub tick would
+# turn a drag of the scrubber into a fork bomb.
+image.workspace = true
+http = "1"
+# Journal timestamps are UTC in the document; the activity feed shows them on the human's
+# wall clock, which needs the local offset.
+chrono.workspace = true
+# The view is a webview rather than a drawn widget set, and that is an accessibility
+# decision before it is a rendering one: HTML roles map to ATK/Orca on Linux and
+# NSAccessibility/VoiceOver on macOS, which no Rust-drawn toolkit in this space does.
+tauri = { version = "2" }
+
+[dev-dependencies]
+tempfile.workspace = true

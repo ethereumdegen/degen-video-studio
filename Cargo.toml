@@ -14,6 +14,7 @@ members = [
     "crates/dvs-ai",
     "crates/dvs-mcp",
     "crates/dvs-cli",
+    "crates/dvs-studio",
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ dvs-inspect = { path = "crates/dvs-inspect", version = "0.1.0" }
 dvs-ai = { path = "crates/dvs-ai", version = "0.1.0" }
 dvs-mcp = { path = "crates/dvs-mcp", version = "0.1.0" }
 dvs-cli = { path = "crates/dvs-cli", version = "0.1.0" }
+dvs-studio = { path = "crates/dvs-studio", version = "0.1.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -73,7 +75,10 @@ tempfile = "3"
 which = "8"
 notify = "8"
 rmcp = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "net", "sync", "time", "signal"] }
+tokio-stream = "0.1"
+axum = "0.8"
+open = "5"
 # reqwest 0.13 renamed the TLS features: `rustls`, not `rustls-tls`.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 secrecy = "0.10"

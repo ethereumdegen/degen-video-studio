@@ -299,14 +299,23 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
             ),
             format!("whisper  {}", if whisper { "compiled in" } else { "not built" }),
         ];
-        if let Some(project) = value["project"].as_object() {
-            lines.push(format!(
+        // Two shapes live under `project`: the survey, and `{ "error": … }` when there is no
+        // project at or above the cwd. Indexing the survey's keys on the error shape panicked
+        // with `no entry found for key`, which made `dvs doctor` — the command whose whole job
+        // is to run when things are wrong — the one command that could not run outside a
+        // project. Match on what is actually there.
+        match &value["project"] {
+            Value::Object(p) if p.contains_key("error") => {
+                lines.push(format!("project  {}", p["error"].as_str().unwrap_or("unavailable")));
+            }
+            Value::Object(p) => lines.push(format!(
                 "project  format {} · {} asset(s) · {} missing · {} stale prox(ies)",
-                project["format"],
-                project["assets"],
-                project["missingAssets"].as_array().map_or(0, Vec::len),
-                project["staleProxies"].as_array().map_or(0, Vec::len),
-            ));
+                p["format"],
+                p["assets"],
+                p["missingAssets"].as_array().map_or(0, Vec::len),
+                p["staleProxies"].as_array().map_or(0, Vec::len),
+            )),
+            _ => {}
         }
         lines.join("\n")
     });

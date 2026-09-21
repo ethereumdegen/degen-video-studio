@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the studio window may do. The frontend needs the core IPC to call the studio's own commands and to listen for `document-changed`; it needs nothing else — no filesystem, no shell, no network. Every edit goes through an op in this process, so a compromised page cannot reach past the op registry.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default", "core:window:allow-set-title"]
+}
