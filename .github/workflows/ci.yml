@@ -1,0 +1,134 @@
+name: ci
+
+# The suite is not hermetic on purpose: it renders with a real ffmpeg, encodes real files,
+# and renders the exported `.kdenlive` with a real `melt` (crates/dvs-interop). So every job
+# installs the toolchain first, and a job without it would pass vacuously.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Warnings are failures here; the tree is warning-free and staying that way is cheaper
+  # than a cleanup week later.
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  test:
+    name: test · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      # ffmpeg: ubuntu-latest ships 6.x in apt, which is older than the 9.x this was
+      # developed against. The version matrix below covers newer builds; this job pins the
+      # distro one so a failure here means "broken on the oldest supported ffmpeg".
+      # melt: the `melt` package on Debian/Ubuntu, `mlt` in Homebrew.
+      # webkit2gtk/gtk/soup: needed to build crates/dvs-studio (Tauri) on Linux only.
+      - name: Install the toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg melt \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libasound2-dev
+      - name: Install the toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg mlt
+
+      - name: Report what we got
+        run: |
+          ffmpeg -version | head -1
+          melt -version 2>&1 | head -1 || true
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo check --workspace --all-targets
+      - run: cargo test --workspace
+
+  # PLAN.md §10 P9 asks for a matrix across ffmpeg majors, because decode output and
+  # container details move between them and the goldens are frame-SSIM with tolerance
+  # rather than byte comparisons.
+  #
+  # Sources, checked 2026-09-21: Ubuntu's apt carries one major (6.x on ubuntu-latest), and
+  # johnvansickle's static archive stops at 6.0.1, so neither can supply 8 or 9. BtbN's
+  # FFmpeg-Builds `latest` release publishes exactly `n8.1` and `n9.0` linux64 GPL builds,
+  # which is what these two rows pull. **ffmpeg 7 is therefore not covered here** — no
+  # published static build of it remains — and the apt job above covers 6.x. If BtbN adds
+  # or drops a major, this list moves with it rather than silently testing one version
+  # twice; a fetch failure fails the job instead of skipping.
+  ffmpeg-versions:
+    name: ffmpeg ${{ matrix.ffmpeg }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ffmpeg: ["n8.1", "n9.0"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install melt and the studio's build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            melt libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libasound2-dev xz-utils
+
+      - name: Fetch a static ffmpeg
+        run: |
+          set -euo pipefail
+          major="${{ matrix.ffmpeg }}"
+          version="${major#n}"
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-${major}-latest-linux64-gpl-${version}.tar.xz"
+          curl -fsSL "$url" -o ffmpeg.tar.xz
+          mkdir -p "$HOME/ffmpeg" && tar -xJf ffmpeg.tar.xz -C "$HOME/ffmpeg" --strip-components=1
+          echo "DVS_FFMPEG=$HOME/ffmpeg/bin/ffmpeg" >> "$GITHUB_ENV"
+          echo "DVS_FFPROBE=$HOME/ffmpeg/bin/ffprobe" >> "$GITHUB_ENV"
+          echo "$HOME/ffmpeg/bin" >> "$GITHUB_PATH"
+
+      - name: Report what we got
+        run: ffmpeg -version | head -1
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # dvs-media resolves the toolchain from DVS_FFMPEG/DVS_FFPROBE before PATH, which is
+      # exactly what this matrix exercises.
+      - run: cargo test --workspace
+
+
+  frontend-accessibility:
+    name: studio frontend · axe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # The window's frontend has no build step and no runtime dependency on npm; this is
+      # the audit harness only. It serves ui/ with its development bridge (fixture data,
+      # no Rust) and runs axe-core against the page, which is how the accessibility claim
+      # in docs/studio.md stays checkable rather than aspirational.
+      #
+      # Server and audit live in one step on purpose: a `&` in its own step leaves the
+      # process to the runner's whims, and a flaky audit is one nobody reads.
+      - name: Serve the frontend and audit it
+        run: |
+          set -euo pipefail
+          npm install --no-save @axe-core/cli http-server
+          npx http-server crates/dvs-studio/ui -p 8173 --silent &
+          server=$!
+          trap 'kill "$server"' EXIT
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8173/index.html > /dev/null && break
+            sleep 1
+          done
+          npx axe http://127.0.0.1:8173 --exit --tags wcag2a,wcag2aa

@@ -19,10 +19,13 @@
 //! re-reads one snapshot; it never diffs the document itself.
 
 use crate::engine::Handle;
+use crate::monitor::Monitor;
 use crate::state::{self, Applied, Finding, Snapshot, StudioOptions};
 use dvs_core::error::{Error, Result};
+use dvs_core::time::{Span, Time};
 use serde::Serialize;
 use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use tokio_stream::StreamExt;
 
@@ -53,9 +56,12 @@ impl From<Error> for CommandError {
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
 
-/// Shared application state: one worker handle, borrowed per command.
+/// Shared application state: the worker handle, the audio device, and which playback
+/// stream is current.
 struct App {
     handle: Handle,
+    monitor: Monitor,
+    playing: Arc<Mutex<Playing>>,
 }
 
 #[tauri::command]
@@ -100,6 +106,160 @@ async fn describe_text(app: State<'_, App>) -> CommandResult<String> {
     Ok(state::describe(&snapshot, &findings))
 }
 
+/// How much audio is mixed per chunk. Long enough that a refill is rare, short enough that
+/// pressing play does not wait on a minute of mixing before the first sample.
+const CHUNK: i64 = 8;
+/// Refill when the device has less than this much buffered.
+const REFILL_AT: f64 = 3.0;
+/// Frames rendered ahead of the playhead when playback starts.
+const PREFETCH: i64 = 48;
+
+/// What the current playback stream is playing, so a later `monitor_play` or a document
+/// edit can retire it. Every stream gets a generation; a feeder whose generation is stale
+/// exits instead of pushing samples into somebody else's playback.
+#[derive(Debug, Default)]
+struct Playing {
+    generation: u64,
+    from_frame: i64,
+}
+
+#[tauri::command]
+async fn monitor_play(
+    from_frame: i64,
+    app: State<'_, App>,
+    window: tauri::Window,
+) -> CommandResult<serde_json::Value> {
+    let fps = app.handle.fps();
+    let duration = app.handle.duration();
+    let start = Time::from_frames(from_frame.max(0), fps);
+    if start >= duration {
+        return Err(Error::op("the playhead is at the end of the sequence").into());
+    }
+    // Warm the picture before the sound starts: the whole point of prefetching is that the
+    // first second of playback is not a slideshow.
+    app.handle.prefetch(from_frame, PREFETCH);
+
+    let end = (start + Time::from_secs(CHUNK)).min(duration);
+    let (samples, rate, channels) = app.handle.mix(Span::new(start, end)).await?;
+    let generation = {
+        let mut playing = app.playing.lock().expect("playback state");
+        playing.generation += 1;
+        playing.from_frame = from_frame;
+        playing.generation
+    };
+    app.monitor
+        .play(Arc::new(samples), rate, channels, 0)
+        .map_err(CommandError::from)?;
+
+    let handle = app.handle.clone();
+    let monitor = app.monitor.clone();
+    let playing = app.playing.clone();
+    let emitter = window.clone();
+    tauri::async_runtime::spawn(async move {
+        feed_and_report(handle, monitor, playing, emitter, generation, from_frame, end).await;
+    });
+
+    Ok(serde_json::json!({
+        "playing": true,
+        "rate": rate,
+        "channels": channels,
+        "device": app.monitor.device(),
+        "fromFrame": from_frame,
+    }))
+}
+
+/// Keep the device fed and tell the window where the audio clock is.
+///
+/// The window follows this, not `performance.now()`: a picture driven by wall time drifts
+/// audibly from sound driven by a device clock within a few seconds.
+async fn feed_and_report(
+    handle: Handle,
+    monitor: Monitor,
+    playing: Arc<Mutex<Playing>>,
+    window: tauri::Window,
+    generation: u64,
+    from_frame: i64,
+    mut mixed_to: Time,
+) {
+    let fps = handle.fps();
+    let duration = handle.duration();
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(50));
+    loop {
+        ticker.tick().await;
+        let current = playing.lock().expect("playback state").generation;
+        if current != generation || !monitor.is_playing() {
+            break;
+        }
+        let (rate, channels) = monitor.format();
+        let played = Time::from_samples(monitor.position() as i64, rate.max(1));
+        let at = Time::from_frames(from_frame, fps) + played;
+        let _ = window.emit(
+            "monitor-position",
+            serde_json::json!({
+                "frame": at.frame_floor(fps),
+                "underruns": monitor.underruns(),
+            }),
+        );
+        if at >= duration {
+            monitor.stop();
+            let _ = window.emit("monitor-ended", ());
+            break;
+        }
+        // Refill while the device still has a cushion, and keep the picture ahead too.
+        let buffered = mixed_to - at;
+        if buffered.as_secs_f64() < REFILL_AT && mixed_to < duration {
+            let next_end = (mixed_to + Time::from_secs(CHUNK)).min(duration);
+            match handle.mix(Span::new(mixed_to, next_end)).await {
+                Ok((samples, _, _)) => {
+                    if !monitor.push(&samples) {
+                        break;
+                    }
+                    mixed_to = next_end;
+                    handle.prefetch(at.frame_floor(fps), PREFETCH);
+                }
+                Err(error) => {
+                    let _ = window.emit("monitor-failed", error.to_string());
+                    monitor.stop();
+                    break;
+                }
+            }
+        }
+        let _ = channels;
+    }
+}
+
+#[tauri::command]
+fn monitor_stop(app: State<'_, App>) -> CommandResult<()> {
+    app.playing.lock().expect("playback state").generation += 1;
+    app.monitor.stop();
+    Ok(())
+}
+
+#[tauri::command]
+fn monitor_state(app: State<'_, App>) -> CommandResult<serde_json::Value> {
+    let fps = app.handle.fps();
+    let (rate, _) = app.monitor.format();
+    let from = app.playing.lock().expect("playback state").from_frame;
+    let at = Time::from_frames(from, fps) + Time::from_samples(app.monitor.position() as i64, rate.max(1));
+    Ok(serde_json::json!({
+        "playing": app.monitor.is_playing(),
+        "frame": at.frame_floor(fps),
+        "device": app.monitor.device(),
+        "underruns": app.monitor.underruns(),
+    }))
+}
+
+#[tauri::command]
+async fn peaks(buckets: u32, app: State<'_, App>) -> CommandResult<Vec<crate::engine::TrackPeaks>> {
+    Ok(app.handle.peaks(buckets.clamp(16, 4096)).await?)
+}
+
+#[tauri::command]
+fn prefetch(from_frame: i64, count: i64, app: State<'_, App>) -> CommandResult<()> {
+    app.handle.prefetch(from_frame, count.clamp(1, 240));
+    Ok(())
+}
+
 /// Open the window. Returns when it closes.
 pub fn run(options: StudioOptions) -> Result<()> {
     let (handle, first) = Handle::open(&options)?;
@@ -112,6 +272,8 @@ pub fn run(options: StudioOptions) -> Result<()> {
     tauri::Builder::default()
         .manage(App {
             handle: handle.clone(),
+            monitor: Monitor::new(),
+            playing: Arc::new(Mutex::new(Playing::default())),
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
@@ -120,7 +282,12 @@ pub fn run(options: StudioOptions) -> Result<()> {
             undo,
             redo,
             lint,
-            describe_text
+            describe_text,
+            monitor_play,
+            monitor_stop,
+            monitor_state,
+            peaks,
+            prefetch
         ])
         .register_asynchronous_uri_scheme_protocol("dvsframe", move |ctx, request, responder| {
             let handle = ctx.app_handle().state::<App>().handle.clone();
@@ -147,6 +314,15 @@ pub fn run(options: StudioOptions) -> Result<()> {
             tauri::async_runtime::spawn(async move {
                 let mut changes = Box::pin(watcher.watch());
                 while changes.next().await.is_some() {
+                    // An edit retires the current playback: the mix it was streaming
+                    // belongs to a document that no longer exists, and the frames queued
+                    // behind it are wrong. The window restarts playback if it wants to.
+                    let state = emitter.state::<App>();
+                    if state.monitor.is_playing() {
+                        state.playing.lock().expect("playback state").generation += 1;
+                        state.monitor.stop();
+                        let _ = emitter.emit("monitor-ended", ());
+                    }
                     // The payload is deliberately empty of document data: the window
                     // re-reads one snapshot, so there is exactly one code path that turns
                     // a document into a view, whether the edit came from here or from an

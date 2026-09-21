@@ -37,22 +37,24 @@ use crate::state::{
     TimelineModel, TrackRow, TransitionBadge,
 };
 use crossbeam_channel::{Receiver, Sender};
+use dvs_audio::MixSpec;
 use dvs_comp::{CompOptions, Compositor};
 use dvs_core::engine::{Engine, Workspace};
 use dvs_core::error::{Error, Result};
-use dvs_core::ids::{ClipId, SequenceId};
+use dvs_core::ids::{ClipId, SequenceId, TrackId};
 use dvs_core::journal::{Actor, Entry, Journal};
 use dvs_core::op::{Registry, Snap};
 use dvs_core::paths::ProjectPaths;
 use dvs_core::project::{Generator, Sequence, Source, Track, TrackKind};
-use dvs_core::time::{Fps, Time};
+use dvs_core::time::{Fps, Span, Time};
 use dvs_core::vfs::FsVfs;
 use dvs_inspect::{LintOptions, Severity};
 use dvs_media::Toolchain;
+use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
 
@@ -61,10 +63,43 @@ use tokio_stream::Stream;
 /// there is exactly one of these.
 static REGISTRY: LazyLock<Registry> = LazyLock::new(dvs_mcp::full_registry);
 
-/// How many composited frames to keep. Eight covers the jitter of a hand on a mouse and a
-/// few frames of step-back; beyond that a preview frame is cheaper to recompute than to
-/// hold, since each one is megabytes of RGBA.
-const CACHE_FRAMES: usize = 8;
+/// How many bytes of composited frames to keep.
+///
+/// Counted in bytes rather than in frames because a frame is not a unit of anything: a
+/// 960×540 RGBA preview is 2 MB and a 3840×2160 one is 33 MB, so a fixed slot count is
+/// either a cache that holds nothing or a window that swallows a gigabyte. The cap is
+/// sized for playback: the prefetcher keeps 48 frames ahead of the playhead — 1.6 seconds
+/// at 30 fps, about 100 MB at 960×540 — and a cache smaller than that window would have
+/// the prefetcher evicting the frames it just rendered, which is worse than no prefetch at
+/// all. The rest is headroom for the scrub history either side of it.
+const CACHE_BYTES: usize = 128 * 1024 * 1024;
+
+/// Longest span [`Handle::mix`] renders in one call.
+///
+/// Sixty seconds of 48 kHz stereo f32 is 23 MB, and it crosses a thread boundary as one
+/// `Vec`. Playback streams in eight-second chunks; anything asking for minutes at a time
+/// has mistaken this for the render path, and the error says so rather than allocating.
+const MIX_MAX_SECS: i64 = 60;
+
+/// Sample rate the waveform is measured at.
+///
+/// A waveform needs about a hundred buckets per screen, not 48000 samples per second, and
+/// mixing the whole timeline at full rate to throw away 99.99% of it is the reason
+/// waveforms feel expensive in other editors. 4 kHz keeps everything up to 2 kHz — every
+/// syllable and every transient a waveform shows — at a twelfth of the work. The peak it
+/// reports is therefore the peak of the material *at waveform resolution* and can read
+/// below `dvs_audio::analyze_loudness`'s true peak, which is the number the lint rules and
+/// the digest use.
+const PEAK_RATE: u32 = 4_000;
+
+/// How much of the timeline is mixed at once while measuring peaks. Bounded so that a
+/// two-hour sequence costs the same memory as a two-minute one.
+const PEAK_CHUNK_SECS: i64 = 30;
+
+/// How many `(revision, buckets)` peak sets to keep. A zoom redraws from the buckets it
+/// already has; the cache exists for the window that re-asks after an edit, plus the
+/// handful of bucket counts a session actually uses.
+const PEAK_SETS: usize = 4;
 
 /// How much history the activity feed carries. A long session's journal is thousands of
 /// entries and the panel shows a dozen.
@@ -95,9 +130,53 @@ struct Shared {
     requests: Sender<Request>,
     paths: ProjectPaths,
     sequence: SequenceId,
-    /// Frames actually composited, as opposed to served from the cache. Instrumentation:
-    /// a number that climbs while the playhead sits still means the cache is not working.
-    renders: Arc<AtomicU64>,
+    counters: Arc<Counters>,
+    timing: Arc<Mutex<Timing>>,
+}
+
+/// What the worker actually did, as opposed to what it was asked for.
+///
+/// Separate counters because they answer different questions. `renders` climbing while
+/// the playhead sits still means the frame cache is not working; `prefetched` climbing
+/// means the opposite, that idle time is being spent on frames nobody has asked for yet;
+/// `peak_mixes` climbing on every zoom would mean the waveform cache is missing and the
+/// timeline is re-mixing itself for a redraw.
+#[derive(Debug, Default)]
+struct Counters {
+    renders: AtomicU64,
+    prefetched: AtomicU64,
+    peak_mixes: AtomicU64,
+}
+
+/// The two numbers playback needs before it can ask anything else, kept where the
+/// transport can read them without a round trip to the worker.
+///
+/// They are not constants: appending a clip changes the duration, and a transport that
+/// cached it at open time would stop playing a second before the end of every edit made
+/// since. The worker rewrites this whenever it re-reads the document.
+#[derive(Debug, Clone, Copy)]
+struct Timing {
+    fps: Fps,
+    duration: Time,
+}
+
+/// One track's waveform: min/max per bucket over the whole sequence, plus the loudest
+/// sample in it.
+///
+/// Buckets span the sequence rather than the clip, so a zoom or a ripple moves which
+/// buckets a clip covers without re-measuring anything.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackPeaks {
+    pub track: TrackId,
+    pub name: String,
+    /// `[min, max]` per bucket, over every channel. Empty when the track carries no audio
+    /// at all — which is an answer, not a failure: a video track of colour cards has no
+    /// waveform to draw and nothing to say about its level.
+    pub buckets: Vec<[f32; 2]>,
+    /// Loudest sample on the track, in dBFS, floored at [`dvs_audio::SILENCE_FLOOR_DB`]
+    /// so that silence is a number a comparison can use rather than `-inf`.
+    pub peak_db: f32,
 }
 
 /// One unit of work for the worker, with the channel its answer goes back on.
@@ -105,6 +184,20 @@ enum Request {
     Frame {
         index: i64,
         reply: oneshot::Sender<Result<Rendered>>,
+    },
+    /// Render ahead of the playhead. No reply: the answer is frames in the cache, and a
+    /// caller that waited for them would be doing the slideshow this exists to prevent.
+    Prefetch {
+        from: i64,
+        count: i64,
+    },
+    Mix {
+        span: Span,
+        reply: oneshot::Sender<Result<(Vec<f32>, u32, u16)>>,
+    },
+    Peaks {
+        buckets: u32,
+        reply: oneshot::Sender<Result<Vec<TrackPeaks>>>,
     },
     Reload {
         reply: oneshot::Sender<Result<Snapshot>>,
@@ -148,13 +241,18 @@ impl Handle {
         };
         let snapshot = snapshot(&workspace, &sequence, baseline, &render)?;
 
-        let renders = Arc::new(AtomicU64::new(0));
+        let counters = Arc::new(Counters::default());
+        let timing = Arc::new(Mutex::new(Timing {
+            fps: snapshot.fps,
+            duration: snapshot.duration,
+        }));
         let worker = Worker {
             engine: Engine::new(REGISTRY.clone(), workspace).as_human(),
             sequence: sequence.clone(),
             render,
             baseline,
-            renders: Arc::clone(&renders),
+            counters: Arc::clone(&counters),
+            timing: Arc::clone(&timing),
         };
 
         let (requests, incoming) = crossbeam_channel::unbounded();
@@ -169,7 +267,8 @@ impl Handle {
                     requests,
                     paths,
                     sequence,
-                    renders,
+                    counters,
+                    timing,
                 }),
             },
             snapshot,
@@ -186,9 +285,36 @@ impl Handle {
         &self.inner.paths
     }
 
-    /// Frames composited since the window opened. Cache hits do not count.
+    /// Frames composited for a request somebody was waiting on. Cache hits and prefetched
+    /// frames do not count: this is the number that says whether the cache is doing its
+    /// job on the interactive path.
     pub fn renders(&self) -> u64 {
-        self.inner.renders.load(Ordering::Relaxed)
+        self.inner.counters.renders.load(Ordering::Relaxed)
+    }
+
+    /// Frames composited ahead of the playhead. Playback that stutters with this climbing
+    /// is a decode too slow to keep up; playback that stutters with it flat is a
+    /// prefetcher that never ran.
+    pub fn prefetched(&self) -> u64 {
+        self.inner.counters.prefetched.load(Ordering::Relaxed)
+    }
+
+    /// The sequence's frame rate, as of the last time the worker read the document.
+    pub fn fps(&self) -> Fps {
+        self.timing().fps
+    }
+
+    /// Where the sequence ends, as of the last time the worker read the document.
+    pub fn duration(&self) -> Time {
+        self.timing().duration
+    }
+
+    fn timing(&self) -> Timing {
+        *self
+            .inner
+            .timing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Re-read `project.json` and `history.jsonl`.
@@ -200,6 +326,40 @@ impl Handle {
     /// sequence background.
     pub async fn frame(&self, index: i64) -> Result<Rendered> {
         self.ask(|reply| Request::Frame { index, reply }).await
+    }
+
+    /// Mix `span` at the sequence's own rate and channel count, interleaved f32.
+    ///
+    /// Exactly `span.duration().sample_round(rate) * channels` samples, so a caller can
+    /// concatenate adjacent spans and get the same stream as one long mix — which is what
+    /// makes streaming playback in chunks sound identical to a render.
+    pub async fn mix(&self, span: Span) -> Result<(Vec<f32>, u32, u16)> {
+        self.ask(|reply| Request::Mix { span, reply }).await
+    }
+
+    /// Render `count` frames from `from` into the cache while the worker is otherwise
+    /// idle, so that pressing play does not turn into a slideshow of on-demand decodes.
+    ///
+    /// Returns immediately, and the newest request replaces the previous window: a scrub
+    /// that has moved on wants the frames under the playhead now, not the ten windows it
+    /// passed through on the way. Every request that somebody is waiting for — a frame, an
+    /// op, a reload, a lint, a mix — is served before the next prefetched frame, and a
+    /// document change abandons the window, because those frames belong to an edit that no
+    /// longer exists.
+    pub fn prefetch(&self, from: i64, count: i64) {
+        // A dead worker is reported by every other call; a prefetch is a hint, and a hint
+        // that raised an error nobody asked for would be noise in the window.
+        let _ = self.inner.requests.send(Request::Prefetch { from, count });
+    }
+
+    /// Per-track waveform data over the whole sequence: `buckets` min/max pairs and the
+    /// track's peak level.
+    ///
+    /// Cached per `(revision, buckets)`. A waveform is redrawn on every zoom notch and on
+    /// every resize, and re-mixing the timeline for a redraw would make the timeline
+    /// unusable at exactly the moment somebody is looking closely at it.
+    pub async fn peaks(&self, buckets: u32) -> Result<Vec<TrackPeaks>> {
+        self.ask(|reply| Request::Peaks { buckets, reply }).await
     }
 
     /// Apply an op through the same registry the CLI and MCP use, journalled as `human`.
@@ -274,7 +434,8 @@ struct Worker {
     sequence: SequenceId,
     render: CompOptions,
     baseline: u64,
-    renders: Arc<AtomicU64>,
+    counters: Arc<Counters>,
+    timing: Arc<Mutex<Timing>>,
 }
 
 impl Worker {
@@ -287,12 +448,23 @@ impl Worker {
     fn reload(&mut self) -> Result<Snapshot> {
         let paths = self.engine.workspace.paths.clone();
         self.engine.workspace = Workspace::open(paths, FsVfs::shared())?;
-        snapshot(
+        let snapshot = snapshot(
             &self.engine.workspace,
             &self.sequence,
             self.baseline,
             &self.render,
-        )
+        )?;
+        // The transport reads these without asking the worker, so they have to be updated
+        // wherever the document is: an edit that lengthens the sequence must lengthen
+        // playback with it.
+        *self
+            .timing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Timing {
+            fps: snapshot.fps,
+            duration: snapshot.duration,
+        };
+        Ok(snapshot)
     }
 
     fn apply(&mut self, op: &str, args: Value) -> Result<Applied> {
@@ -345,6 +517,40 @@ impl Worker {
             })
             .collect())
     }
+
+    /// Frames the sequence covers, so a prefetch window cannot run off the end of it.
+    fn frame_count(&self) -> i64 {
+        self.engine
+            .workspace
+            .project
+            .sequence(&self.sequence)
+            .map_or(0, |sequence| sequence.frame_count())
+    }
+
+    /// Mix a span of the timeline at the sequence's own rate and channel count.
+    fn mix(&self, span: Span) -> Result<(Vec<f32>, u32, u16)> {
+        let workspace = &self.engine.workspace;
+        let spec = MixSpec::of(workspace.project.sequence(&self.sequence)?);
+        if span.is_empty() {
+            return Ok((Vec::new(), spec.rate, spec.channels));
+        }
+        if span.duration() > Time::from_secs(MIX_MAX_SECS) {
+            return Err(Error::bad_args(format!(
+                "a mix of {:.1} s is longer than the {MIX_MAX_SECS} s the monitor renders at once; ask for it in chunks",
+                span.duration().as_secs_f64()
+            )));
+        }
+        let samples = dvs_audio::mix_span(
+            &workspace.project,
+            &self.sequence,
+            span,
+            spec,
+            Toolchain::shared()?,
+            &workspace.assets,
+            &workspace.paths,
+        )?;
+        Ok((samples, spec.rate, spec.channels))
+    }
 }
 
 /// The clip a finding's target names, when it names exactly one.
@@ -363,24 +569,51 @@ fn named_clip(
 
 /// The worker loop.
 ///
-/// The shape is unusual for a reason. A [`Compositor`] borrows the document and caches
+/// The shape is unusual for two reasons. A [`Compositor`] borrows the document and caches
 /// decoders bound to the clips that were in it, so it cannot outlive an edit — and it must
 /// not be rebuilt per frame either, or every frame respawns ffmpeg. So reads run in an
 /// inner loop with a live compositor, and the first request that mutates the document ends
 /// that loop, drops the compositor, and is handled with the document mutable again.
+///
+/// The second reason is the prefetcher. It is not a request in the queue: it is what the
+/// worker does when the queue is *empty*, one frame at a time. That is the whole priority
+/// scheme, and it needs no priority queue — an arriving frame, op, reload, lint or mix is
+/// picked up after at most one prefetched frame, and a window that is no longer wanted is
+/// simply replaced rather than cancelled.
 fn serve(mut worker: Worker, requests: Receiver<Request>) {
-    let mut cache = FrameCache::default();
+    let mut cache = FrameCache::new(CACHE_BYTES);
+    let mut peaks_cache = PeakCache::default();
     let mut revision = worker.revision();
+    let mut window: Option<Window> = None;
     loop {
         let mut comp: Option<Compositor<'_>> = None;
         let mutation = loop {
-            let Ok(request) = requests.recv() else {
-                return;
+            let request = match requests.try_recv() {
+                Ok(request) => request,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => return,
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    if prefetch_step(&worker, &mut comp, &mut cache, revision, &mut window) {
+                        continue;
+                    }
+                    let Ok(request) = requests.recv() else {
+                        return;
+                    };
+                    request
+                }
             };
             match request {
                 Request::Frame { index, reply } => {
                     let answer = render(&worker, &mut comp, &mut cache, revision, index);
                     let _ = reply.send(answer);
+                }
+                Request::Prefetch { from, count } => {
+                    window = Window::new(from, count, worker.frame_count());
+                }
+                Request::Mix { span, reply } => {
+                    let _ = reply.send(worker.mix(span));
+                }
+                Request::Peaks { buckets, reply } => {
+                    let _ = reply.send(peaks(&worker, &mut peaks_cache, revision, buckets));
                 }
                 Request::Lint { reply } => {
                     let _ = reply.send(worker.lint());
@@ -391,6 +624,9 @@ fn serve(mut worker: Worker, requests: Receiver<Request>) {
         // Everything below needs the document mutable, which the compositor's borrow
         // forbids; dropping it here is also what discards decoders bound to the old edit.
         drop(comp);
+        // And the frames the window was about to render are frames of a document that is
+        // about to stop existing.
+        window = None;
         match mutation {
             Request::Reload { reply } => {
                 let _ = reply.send(worker.reload());
@@ -404,11 +640,75 @@ fn serve(mut worker: Worker, requests: Receiver<Request>) {
             Request::Redo { reply } => {
                 let _ = reply.send(worker.redo());
             }
-            Request::Frame { .. } | Request::Lint { .. } => {
+            Request::Frame { .. }
+            | Request::Prefetch { .. }
+            | Request::Mix { .. }
+            | Request::Peaks { .. }
+            | Request::Lint { .. } => {
                 unreachable!("reads are answered in the inner loop")
             }
         }
         revision = worker.revision();
+    }
+}
+
+/// Frames still to render ahead of the playhead.
+struct Window {
+    next: i64,
+    end: i64,
+}
+
+impl Window {
+    /// `None` when there is nothing to do, so the worker goes back to blocking on the
+    /// queue instead of spinning on an empty range.
+    fn new(from: i64, count: i64, frames: i64) -> Option<Window> {
+        let next = from.max(0);
+        // Frames past the end of the sequence are the background, over and over; the
+        // playhead stops there anyway.
+        let end = from.saturating_add(count.max(0)).min(frames);
+        (next < end).then_some(Window { next, end })
+    }
+}
+
+/// Render one frame of the prefetch window. `true` when there is more to do.
+fn prefetch_step<'w>(
+    worker: &'w Worker,
+    comp: &mut Option<Compositor<'w>>,
+    cache: &mut FrameCache,
+    revision: u64,
+    window: &mut Option<Window>,
+) -> bool {
+    let Some(pending) = window.as_mut() else {
+        return false;
+    };
+    let mut wanted = None;
+    while pending.next < pending.end {
+        let candidate = pending.next;
+        pending.next += 1;
+        // Already resident — from the scrub that preceded play, or from an overlapping
+        // earlier window. Skipping is the point of asking.
+        if !cache.holds(candidate, revision) {
+            wanted = Some(candidate);
+            break;
+        }
+    }
+    let Some(index) = wanted else {
+        *window = None;
+        return false;
+    };
+    match composite(worker, comp, index) {
+        Ok(rendered) => {
+            cache.put(index, revision, rendered);
+            worker.counters.prefetched.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        // A window whose frames will not render is not worth forty-seven more attempts.
+        // The interactive request for the same frame reports the reason to the window,
+        // which is where a person can see it.
+        Err(_) => {
+            *window = None;
+            false
+        }
     }
 }
 
@@ -423,6 +723,19 @@ fn render<'w>(
     if let Some(hit) = cache.get(index, revision) {
         return Ok(hit);
     }
+    worker.counters.renders.fetch_add(1, Ordering::Relaxed);
+    let rendered = composite(worker, comp, index)?;
+    cache.put(index, revision, rendered.clone());
+    Ok(rendered)
+}
+
+/// Build the compositor if this is the first frame since the document was read, and
+/// composite.
+fn composite<'w>(
+    worker: &'w Worker,
+    comp: &mut Option<Compositor<'w>>,
+    index: i64,
+) -> Result<Rendered> {
     if comp.is_none() {
         *comp = Some(Compositor::new(
             Toolchain::shared()?,
@@ -434,14 +747,11 @@ fn render<'w>(
         )?);
     }
     let comp = comp.as_mut().expect("just built");
-    worker.renders.fetch_add(1, Ordering::Relaxed);
     let frame = comp.frame(index)?;
     // Flatten onto the sequence background: the viewport is an opaque picture, and drawing
     // a transparency checkerboard is the window's job, not the compositor's.
     let rgb = frame.to_rgb8_over(comp.background()?);
-    let rendered = (frame.width(), frame.height(), opaque_rgba(&rgb));
-    cache.put(index, revision, rendered.clone());
-    Ok(rendered)
+    Ok((frame.width(), frame.height(), opaque_rgba(&rgb)))
 }
 
 /// RGB8 to RGBA8 with a fully opaque alpha channel, in one allocation and one pass.
@@ -453,35 +763,193 @@ fn opaque_rgba(rgb: &[u8]) -> Vec<u8> {
     rgba
 }
 
-/// The last few composited frames, least recently used first.
+/// Composited frames, least recently used first, capped by the bytes they occupy.
 ///
-/// Keyed by revision as well as index so an edit cannot serve a stale picture: the key of a
-/// frame rendered before the edit can never be asked for again, and the entry ages out of
-/// the eight slots on its own.
-#[derive(Default)]
+/// Keyed by revision as well as index so an edit cannot serve a stale picture: the key of
+/// a frame rendered before the edit can never be asked for again, and the entry ages out
+/// on its own.
 struct FrameCache {
-    entries: Vec<(i64, u64, Rendered)>,
+    entries: Vec<Cached>,
+    bytes: usize,
+    capacity: usize,
+}
+
+struct Cached {
+    index: i64,
+    revision: u64,
+    frame: Rendered,
 }
 
 impl FrameCache {
-    fn get(&mut self, index: i64, revision: u64) -> Option<Rendered> {
-        let at = self
-            .entries
-            .iter()
-            .position(|(i, r, _)| *i == index && *r == revision)?;
-        // Touch it, so scrubbing back and forth keeps both ends of the travel resident.
-        let entry = self.entries.remove(at);
-        let rendered = entry.2.clone();
-        self.entries.push(entry);
-        Some(rendered)
+    fn new(capacity: usize) -> FrameCache {
+        FrameCache {
+            entries: Vec::new(),
+            bytes: 0,
+            capacity,
+        }
     }
 
-    fn put(&mut self, index: i64, revision: u64, rendered: Rendered) {
-        if self.entries.len() == CACHE_FRAMES {
+    fn get(&mut self, index: i64, revision: u64) -> Option<Rendered> {
+        let at = self.position(index, revision)?;
+        // Touch it, so scrubbing back and forth keeps both ends of the travel resident.
+        let entry = self.entries.remove(at);
+        let frame = entry.frame.clone();
+        self.entries.push(entry);
+        Some(frame)
+    }
+
+    /// Whether the frame is resident, without making it the most recent. The prefetcher
+    /// asks; promoting a frame nobody has looked at would let a long window push out the
+    /// scrub history that a person is actually using.
+    fn holds(&self, index: i64, revision: u64) -> bool {
+        self.position(index, revision).is_some()
+    }
+
+    /// Insert, evicting from the least recently used end until it fits. A single frame
+    /// larger than the whole cap is kept anyway, alone: refusing to cache it would make
+    /// every step of a scrub on an 8K sequence a fresh decode.
+    fn put(&mut self, index: i64, revision: u64, frame: Rendered) {
+        if let Some(at) = self.position(index, revision) {
+            let stale = self.entries.remove(at);
+            self.bytes -= stale.frame.2.len();
+        }
+        let size = frame.2.len();
+        while self.bytes + size > self.capacity && !self.entries.is_empty() {
+            let evicted = self.entries.remove(0);
+            self.bytes -= evicted.frame.2.len();
+        }
+        self.bytes += size;
+        self.entries.push(Cached {
+            index,
+            revision,
+            frame,
+        });
+    }
+
+    fn position(&self, index: i64, revision: u64) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.index == index && entry.revision == revision)
+    }
+}
+
+// ---------------------------------------------------------------------------- waveforms
+
+/// Peak sets already measured, newest last.
+#[derive(Default)]
+struct PeakCache {
+    entries: Vec<(u64, u32, Vec<TrackPeaks>)>,
+}
+
+impl PeakCache {
+    fn get(&self, revision: u64, buckets: u32) -> Option<Vec<TrackPeaks>> {
+        self.entries
+            .iter()
+            .find(|(rev, count, _)| *rev == revision && *count == buckets)
+            .map(|(_, _, peaks)| peaks.clone())
+    }
+
+    fn put(&mut self, revision: u64, buckets: u32, peaks: Vec<TrackPeaks>) {
+        if self.entries.len() == PEAK_SETS {
             self.entries.remove(0);
         }
-        self.entries.push((index, revision, rendered));
+        self.entries.push((revision, buckets, peaks));
     }
+}
+
+fn peaks(
+    worker: &Worker,
+    cache: &mut PeakCache,
+    revision: u64,
+    buckets: u32,
+) -> Result<Vec<TrackPeaks>> {
+    if let Some(hit) = cache.get(revision, buckets) {
+        return Ok(hit);
+    }
+    worker.counters.peak_mixes.fetch_add(1, Ordering::Relaxed);
+    let measured = measure_peaks(worker, buckets)?;
+    cache.put(revision, buckets, measured.clone());
+    Ok(measured)
+}
+
+/// Mix every track that carries audio, once, and reduce it to min/max buckets.
+fn measure_peaks(worker: &Worker, buckets: u32) -> Result<Vec<TrackPeaks>> {
+    let workspace = &worker.engine.workspace;
+    let sequence = workspace.project.sequence(&worker.sequence)?;
+    let duration = sequence.duration();
+    let buckets = buckets.max(1) as usize;
+    let total = duration.sample_round(PEAK_RATE);
+
+    // The waveform is the shape of the material, not of the monitor path. `mix_tracks`
+    // applies mute and solo — correctly, it is the mixer — so the measurement runs against
+    // a copy of the document with both cleared: soloing A2 must not blank the waveform on
+    // A1 and tell a reader the clip is empty.
+    let mut material = workspace.project.clone();
+    for track in &mut material.sequence_mut(&worker.sequence)?.tracks {
+        track.muted = false;
+        track.solo = false;
+    }
+    let spec = MixSpec {
+        rate: PEAK_RATE,
+        channels: sequence.channels,
+    };
+    let channels = usize::from(spec.channels.max(1));
+
+    let mut measured = Vec::with_capacity(sequence.tracks.len());
+    for track in &sequence.tracks {
+        let carries = track.clips.iter().any(|clip| {
+            dvs_audio::clip_carries_audio(&workspace.project, sequence, track, clip)
+                .unwrap_or(false)
+        });
+        if !carries || total <= 0 {
+            // Not an error: a track of colour cards has no waveform, and saying so with an
+            // empty list lets the window draw the rest instead of failing the panel.
+            measured.push(TrackPeaks {
+                track: track.id.clone(),
+                name: track.name.clone(),
+                buckets: Vec::new(),
+                peak_db: dvs_audio::gain_to_db(0.0),
+            });
+            continue;
+        }
+
+        let mut shape = vec![[0.0f32, 0.0f32]; buckets];
+        let mut peak = 0.0f32;
+        let only = [track.id.clone()];
+        let mut at = Time::ZERO;
+        while at < duration {
+            let end = (at + Time::from_secs(PEAK_CHUNK_SECS)).min(duration);
+            let mixed = dvs_audio::mix_tracks(
+                &material,
+                &worker.sequence,
+                Some(&only),
+                Span::new(at, end),
+                spec,
+                Toolchain::shared()?,
+                &workspace.assets,
+                &workspace.paths,
+            )?;
+            let base = at.sample_round(PEAK_RATE);
+            for (offset, frame) in mixed.chunks_exact(channels).enumerate() {
+                let bucket = (((base + offset as i64) * buckets as i64) / total)
+                    .clamp(0, buckets as i64 - 1) as usize;
+                let slot = &mut shape[bucket];
+                for &sample in frame {
+                    slot[0] = slot[0].min(sample);
+                    slot[1] = slot[1].max(sample);
+                    peak = peak.max(sample.abs());
+                }
+            }
+            at = end;
+        }
+        measured.push(TrackPeaks {
+            track: track.id.clone(),
+            name: track.name.clone(),
+            buckets: shape,
+            peak_db: dvs_audio::gain_to_db(peak),
+        });
+    }
+    Ok(measured)
 }
 
 // ------------------------------------------------------------------ snapshot building
@@ -1761,5 +2229,300 @@ mod tests {
         // `Rc`, a `RefCell` — would fail here rather than at the far end of the wiring.
         fn managed<T: Send + Sync + Clone + 'static>() {}
         managed::<Handle>();
+    }
+
+    // ------------------------------------------------------------ sound and prefetching
+
+    /// Two seconds of picture with a 1 kHz tone under the first second of it. Nothing here
+    /// needs a decoder, so these tests measure the engine rather than ffmpeg.
+    fn toned(amplitude: f64) -> Fixture {
+        documented("audio", move |project| {
+            let mut video = Track::new("V1", TrackKind::Video);
+            video.clips.push(Clip::new(
+                Source::Color { color: Rgba::WHITE },
+                Time::ZERO,
+                Time::from_secs(2),
+            ));
+            let mut params = Map::new();
+            params.insert("amplitude".into(), serde_json::json!(amplitude));
+            let mut audio = Track::new("A1", TrackKind::Audio);
+            audio.clips.push(Clip::new(
+                Source::Generator {
+                    generator: Generator::Tone,
+                    params,
+                },
+                Time::ZERO,
+                Time::from_secs(1),
+            ));
+            let active = project.active_sequence.clone();
+            let seq = project.sequence_mut(&active).expect("the default sequence");
+            seq.tracks.push(video);
+            seq.tracks.push(audio);
+        })
+    }
+
+    /// Wait for a prefetch window to finish. Polling the counter rather than sleeping a
+    /// fixed time: the claim is about what the worker did, not how fast it did it.
+    async fn settle(handle: &Handle, frames: u64) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        while handle.prefetched() < frames {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the prefetcher stopped at {} of {frames} frames",
+                handle.prefetched()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mix_is_exactly_the_span_asked_for_and_refuses_a_span_that_is_not() {
+        let fixture = toned(0.5);
+        let (handle, _) = fixture.open();
+
+        let span = Span::new(Time::ZERO, Time::from_secs(1));
+        let (samples, rate, channels) = handle.mix(span).await.expect("mix the first second");
+        assert_eq!((rate, channels), (48_000, 2), "the mix is in the sequence's format");
+        assert_eq!(
+            samples.len() as i64,
+            span.duration().sample_round(rate) * i64::from(channels),
+            "a chunk that is not exactly its span cannot be concatenated with the next one"
+        );
+        let loudest = samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        assert!(
+            (loudest - 0.5).abs() < 0.01,
+            "a half-scale tone must arrive at half scale, got {loudest}"
+        );
+
+        // The second half of the sequence has no audio under it.
+        let (silence, _, _) = handle
+            .mix(Span::new(Time::from_secs(1), Time::from_secs(2)))
+            .await
+            .expect("mix the silent half");
+        assert!(silence.iter().all(|sample| *sample == 0.0));
+
+        let error = handle
+            .mix(Span::new(Time::ZERO, Time::from_secs(61)))
+            .await
+            .expect_err("a minute and one second is over the cap");
+        assert!(
+            error.to_string().contains("60 s"),
+            "the refusal has to name the cap a caller must chunk under: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fps_and_duration_follow_the_document() {
+        let fixture = toned(0.5);
+        let (handle, _) = fixture.open();
+        assert_eq!(handle.fps(), fps());
+        assert_eq!(handle.duration(), Time::from_secs(2));
+
+        handle
+            .apply(
+                "clip.append",
+                serde_json::json!({ "track": "V1", "source": "color:#204080", "duration": 3 }),
+            )
+            .await
+            .expect("append a clip");
+        assert_eq!(
+            handle.duration(),
+            Time::from_secs(5),
+            "a transport that cached the duration at open would stop three seconds early"
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetched_frames_are_served_without_compositing_again() {
+        let fixture = Fixture::new();
+        fixture.with_clip(2);
+        let (handle, _) = fixture.open();
+
+        handle.prefetch(0, 24);
+        settle(&handle, 24).await;
+
+        for index in 0..24 {
+            handle.frame(index).await.expect("a prefetched frame");
+        }
+        assert_eq!(
+            handle.renders(),
+            0,
+            "every frame of the window was already in the cache"
+        );
+        assert_eq!(handle.prefetched(), 24, "and none of them was rendered twice");
+    }
+
+    #[tokio::test]
+    async fn an_interactive_frame_is_served_before_the_prefetch_window_finishes() {
+        let fixture = Fixture::new();
+        fixture.with_clip(6);
+        let (handle, _) = fixture.open();
+
+        handle.prefetch(0, 120);
+        // Wait until the window is demonstrably running, so that what follows is a frame
+        // arriving *during* a prefetch rather than one that beat it to the queue. The
+        // remaining hundred-odd frames are far more decoding than an enqueue costs, so a
+        // counter short of the window is the ordering and not a coincidence.
+        settle(&handle, 1).await;
+        let (width, _, _) = handle.frame(179).await.expect("the frame under the playhead");
+        let ahead = handle.prefetched();
+
+        assert_eq!(width, 80);
+        assert!(
+            ahead < 120,
+            "a frame somebody is waiting for must not queue behind the whole window"
+        );
+        assert_eq!(handle.renders(), 1, "and it was composited, not guessed");
+
+        settle(&handle, 120).await;
+        assert_eq!(
+            handle.renders(),
+            1,
+            "the window carried on afterwards without re-rendering the interactive frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_document_change_abandons_the_prefetch_window() {
+        let fixture = Fixture::new();
+        fixture.with_clip(6);
+        let (handle, _) = fixture.open();
+
+        handle.prefetch(0, 120);
+        settle(&handle, 1).await;
+        handle
+            .apply("marker.add", serde_json::json!({ "at": 1, "name": "beat" }))
+            .await
+            .expect("edit while the window is running");
+        let abandoned = handle.prefetched();
+        assert!(
+            (1..120).contains(&abandoned),
+            "the edit landed while the window was running, at {abandoned} frames"
+        );
+
+        handle.frame(0).await.expect("a frame after the edit");
+        assert_eq!(
+            handle.renders(),
+            1,
+            "frames rendered before the edit belong to a document that no longer exists"
+        );
+        assert_eq!(
+            handle.prefetched(),
+            abandoned,
+            "and the rest of the window was dropped rather than filling the cache with them"
+        );
+    }
+
+    #[test]
+    fn the_frame_cache_evicts_by_bytes_and_keeps_what_was_touched() {
+        let frame = |value: u8| (2u32, 1u32, vec![value; 8]);
+        let mut cache = FrameCache::new(24);
+
+        cache.put(0, 1, frame(0));
+        cache.put(1, 1, frame(1));
+        cache.put(2, 1, frame(2));
+        assert_eq!(cache.bytes, 24, "three eight-byte frames fill the cap exactly");
+
+        cache.put(3, 1, frame(3));
+        assert!(cache.bytes <= 24, "the cap holds: {} bytes", cache.bytes);
+        assert!(!cache.holds(0, 1), "the oldest went");
+        assert!(cache.holds(1, 1) && cache.holds(2, 1) && cache.holds(3, 1));
+
+        // Touching an entry moves it out of the firing line; asking whether it is there
+        // does not, or a long prefetch window would evict the scrub history behind it.
+        cache.get(1, 1).expect("still resident");
+        cache.holds(2, 1);
+        cache.put(4, 1, frame(4));
+        assert!(!cache.holds(2, 1), "the least recently *used* entry went");
+        assert!(cache.holds(1, 1));
+
+        // A different revision is a different frame, even at the same index.
+        assert!(!cache.holds(4, 2));
+    }
+
+    #[tokio::test]
+    async fn peaks_follow_the_signal_and_are_measured_once_per_revision() {
+        let fixture = toned(0.5);
+        let (handle, _) = fixture.open();
+
+        let measured = handle.peaks(100).await.expect("peaks");
+        let audio = measured
+            .iter()
+            .find(|track| track.name == "A1")
+            .expect("the audio track is in the answer");
+        assert_eq!(audio.buckets.len(), 100);
+
+        // A tone under the first second of a two-second sequence: loud, then nothing.
+        let level = |bucket: &[f32; 2]| bucket[0].abs().max(bucket[1].abs());
+        assert!(
+            audio.buckets[..50].iter().all(|bucket| level(bucket) > 0.4),
+            "the first half carries the tone"
+        );
+        assert!(
+            audio.buckets[50..].iter().all(|bucket| level(bucket) < 1e-6),
+            "the second half is silent"
+        );
+        assert!(
+            (audio.peak_db - (-6.02)).abs() < 1.0,
+            "half scale is −6 dBFS, got {}",
+            audio.peak_db
+        );
+
+        let video = measured
+            .iter()
+            .find(|track| track.name == "V1")
+            .expect("a track with no audio is still in the answer");
+        assert!(
+            video.buckets.is_empty(),
+            "a colour card has no waveform, which is an answer rather than a failure"
+        );
+        assert_eq!(video.peak_db, dvs_audio::SILENCE_FLOOR_DB as f32);
+
+        // A redraw at the same revision must not re-mix the timeline.
+        let mixes = handle.inner.counters.peak_mixes.load(Ordering::Relaxed);
+        assert_eq!(mixes, 1);
+        handle.peaks(100).await.expect("the cached answer");
+        assert_eq!(
+            handle.inner.counters.peak_mixes.load(Ordering::Relaxed),
+            1,
+            "a zoom redraw asks again and must be free"
+        );
+
+        // A different bucket count is a different measurement.
+        handle.peaks(50).await.expect("a coarser waveform");
+        assert_eq!(handle.inner.counters.peak_mixes.load(Ordering::Relaxed), 2);
+
+        // And an edit is not.
+        handle
+            .apply("marker.add", serde_json::json!({ "at": 1, "name": "beat" }))
+            .await
+            .expect("edit the document");
+        handle.peaks(100).await.expect("peaks after the edit");
+        assert_eq!(
+            handle.inner.counters.peak_mixes.load(Ordering::Relaxed),
+            3,
+            "an edit can change the sound, so the waveform is measured again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_muted_track_still_draws_its_waveform() {
+        let fixture = toned(0.5);
+        let (handle, _) = fixture.open();
+        handle
+            .apply("track.mute", serde_json::json!({ "track": "A1" }))
+            .await
+            .expect("mute the audio track");
+
+        let measured = handle.peaks(64).await.expect("peaks");
+        let audio = measured
+            .iter()
+            .find(|track| track.name == "A1")
+            .expect("the audio track");
+        assert!(
+            audio.peak_db > -10.0,
+            "the waveform is the shape of the material, not of the monitor path: {}",
+            audio.peak_db
+        );
     }
 }

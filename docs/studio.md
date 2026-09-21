@@ -147,3 +147,11 @@ Two details worth keeping:
   the target, so every save replaces the inode and a watch registered on the file itself goes
   deaf after the first edit — the window would then update exactly once and look correct
   while being permanently stale.
+
+## Install
+
+`cargo install --path crates/dvs-studio` puts `dvs-studio` in `~/.cargo/bin`; the runtime
+needs `ffmpeg` plus a system webview (`webkit2gtk-4.1` on Linux, nothing extra on macOS).
+A freedesktop entry and icons are in [`packaging/`](../packaging/README.md), along with the
+exact install commands and a note on what `tauri build` would and would not produce —
+bundling is `active: false` today, so `cargo install` is the supported path.

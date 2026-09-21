@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=dvs studio
+GenericName=Video Editor
+Comment=Watch a degen-video-studio project being edited, by you or by an agent
+Exec=dvs-studio --project %f
+Icon=dvs-studio
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editing;timeline;agent;ffmpeg;mlt;kdenlive;
+# The window takes a project *directory*, not a media file, so the only sensible drop
+# target is a folder. Nothing else is claimed: registering this for video/* would put a
+# timeline editor in the "open with" list for every mp4 on the system.
+MimeType=inode/directory;
+# Tauri derives the WM class from the identifier in tauri.conf.json (studio.degen.dvs).
+# Under Wayland the toplevel app-id is the binary name; under XWayland the class is
+# capitalised. Both are listed so the entry matches either path and the launcher groups
+# the window with its icon instead of showing a generic one.
+StartupWMClass=dvs-studio
+StartupNotify=true

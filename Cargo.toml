@@ -77,9 +77,9 @@ notify = "8"
 rmcp = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "net", "sync", "time", "signal"] }
 tokio-stream = "0.1"
-axum = "0.8"
-open = "5"
-# reqwest 0.13 renamed the TLS features: `rustls`, not `rustls-tls`.
+# Audio monitoring in the studio window. The engine's mixer produces f32 PCM; cpal is the
+# thinnest cross-platform way to put it on a device (ALSA/Pipewire here, CoreAudio on mac).
+cpal = "0.18"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 secrecy = "0.10"
 base64 = "0.22"

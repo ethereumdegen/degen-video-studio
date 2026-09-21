@@ -26,10 +26,12 @@
 
 pub mod app;
 pub mod engine;
+pub mod monitor;
 pub mod state;
 pub mod watch;
 
 pub use engine::Handle;
+pub use monitor::Monitor;
 pub use state::{Applied, Finding, Snapshot, StudioOptions};
 
 /// Open a project in a window. Returns when the window closes.

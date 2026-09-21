@@ -36,6 +36,9 @@ tokio-stream.workspace = true
 # turn a drag of the scrubber into a fork bomb.
 image.workspace = true
 http = "1"
+# Audio monitoring: the mixer's f32 PCM has to reach a device, and audio is the playback
+# clock the picture follows.
+cpal.workspace = true
 # Journal timestamps are UTC in the document; the activity feed shows them on the human's
 # wall clock, which needs the local offset.
 chrono.workspace = true
