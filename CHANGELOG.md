@@ -2,8 +2,8 @@
 
 ## 0.1.0 — unreleased
 
-First working engine: P0–P6 and P8 of [PLAN.md](PLAN.md). 593 tests, run against real
-ffmpeg, real encodes and real `melt`.
+First working engine: P0–P8 of [PLAN.md](PLAN.md). 645 tests, run against real ffmpeg,
+real encodes and real `melt`.
 
 ### Document and engine
 
@@ -63,8 +63,9 @@ ffmpeg, real encodes and real `melt`.
   and a lint that cries wolf on every project stops being read.
 - **Ducking attack and release are not frame-snapped.** They are sidechain time constants
   measured in samples; the frame grid has no meaning there.
-- **P9 (packaging and signing) is not implemented**, and the studio window has no audio
-  monitoring — playback is picture-only.
+- **P9 (bundling and signing) is not implemented**; `cargo install` plus the freedesktop
+  entry in `packaging/` is the supported install path, and no `.deb`, `.AppImage` or `.dmg`
+  is published.
 
 ### The studio window (P7)
 
@@ -82,6 +83,25 @@ ffmpeg, real encodes and real `melt`.
 - The project *directory* is watched, debounced at 120 ms: atomic writes replace the inode, so
   a watch on `project.json` itself goes deaf after the first edit.
 - `dvs-studio --describe` prints the whole window as text.
+- **Playback with sound.** The mixer feeds a `cpal` output stream in 8-second chunks and the
+  picture follows the *device's* frame counter, not `performance.now()`: video chasing a wall
+  clock while sound plays out of a device buffer drifts audibly within seconds. With no
+  device, the window falls back to a wall clock and says which clock is running. Frames are
+  composited ahead of the playhead — speculatively, whenever the worker's channel is empty,
+  so an interactive seek always jumps the queue — and a frame that is not ready is counted
+  as a skip rather than stalling the clock: `playing · audio clock · 30.6 / 29.97 fps ·
+  0 skipped`.
+- Audio clips draw a waveform from per-track peaks, cached per revision and measured against
+  a clone with mute and solo cleared, so the drawing shows the material rather than the
+  monitor path. The canvas is `aria-hidden`; the peak in dBFS joins the clip's accessible
+  name.
+- **Resizable panes.** Three `role="separator"` splitters — side column, viewport against
+  timeline, activity against lint — draggable and keyboard-operable, publishing their size
+  in `aria-valuenow` pixels, remembered in `localStorage`.
+- First CI: the suite on Linux and macOS against real ffmpeg and `melt`, an ffmpeg 8/9 matrix
+  from static builds, an axe-core pass, and `scripts/ui-check.mjs` driving the frontend in
+  headless Chromium (16 checks: drag distance, no drift, keys that do not leak to the
+  transport, persistence, the stacked breakpoint).
 
 ### Accessibility
 
@@ -121,3 +141,14 @@ canvas, Slint strong but GPL/commercial):
   names belonged to `ui/fixture.json`. `withGlobalTauri` was missing too.
 - `image`'s PNG encoder panics on a short buffer rather than erroring, which would have taken
   the window's IPC thread down; the frame path now checks the length itself.
+- **The viewport never showed a frame in the real window.** The frontend guessed the custom
+  scheme's origin from the user agent and picked Windows' spelling (`http://dvsframe.localhost`)
+  on Linux, where WebKitGTK serves `dvsframe://localhost`. Every frame request failed inside
+  the webview, silently, and the browser fixture — which draws its own frames — stayed green.
+  The origin now comes from Tauri's `convertFileSrc`, whose entire job is that mapping.
+- **Playback stopped after about a second, blaming an edit that never happened.** The
+  directory watcher forwarded inotify `Access` events, so the window's own reload of
+  `project.json` produced the next "the document changed", which retired playback and
+  reloaded again — a loop of about 55 events per second. The watcher now filters on event
+  kind: reads and metadata touches are not edits. Regression test:
+  `watch::tests::reading_the_document_is_not_an_edit`.

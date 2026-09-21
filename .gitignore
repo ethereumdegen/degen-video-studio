@@ -1,2 +1,5 @@
 /target
 /Cargo.lock
+# only ever a local install for scripts/ui-check.mjs and the axe run; the window's
+# frontend has no build step and no runtime dependency on npm.
+/node_modules

@@ -11,21 +11,73 @@
 // pass, a screen reader -- without building Rust, so it drives the same code paths the real
 // bridge does, including emitting a genuine `document-changed` event a few seconds after
 // load so the live region can be observed doing its job.
+//
+// It also carries a simulated audio device: real time, real 20 Hz `monitor-position`
+// events, the same reply shapes, and the failures worth rehearsing (no device, a device
+// that never starts). The clock logic is the one part of this window that can be wrong in
+// a way nobody notices until playback drifts, so it is the part that most needs to be
+// testable in a browser.
 
 const tauri = typeof window !== "undefined" ? window.__TAURI__ : undefined;
 export const isTauri = Boolean(tauri && tauri.core && typeof tauri.core.invoke === "function");
 
-/** Tauri v2 serves custom schemes as `scheme://localhost` on macOS and iOS, and as
- *  `http://scheme.localhost` on Linux and Windows. Both are in the CSP in tauri.conf.json. */
+/** The origin the `dvsframe` scheme is served from, asked of Tauri rather than guessed.
+ *
+ *  The mapping is per-platform and not guessable from the user agent: WebKitGTK and WKWebView
+ *  get a real `dvsframe://localhost`, while Windows (WebView2) and Android are served
+ *  `http://dvsframe.localhost`. Sniffing the UA got Linux wrong, and the failure was silent
+ *  — every frame request 404'd inside the webview, the viewport sat on "no frame yet", and
+ *  the browser fixture (which never uses this path) stayed green. `convertFileSrc` is the
+ *  API whose whole job is this mapping; it is also what the CSP in tauri.conf.json is
+ *  written against, which is why both spellings appear there. */
 function frameOrigin() {
-  const ua = navigator.userAgent || "";
-  const appleLike = /Mac OS X|iPhone|iPad/.test(ua) && !/Windows|Linux|Android/.test(ua);
-  return appleLike ? "dvsframe://localhost" : "http://dvsframe.localhost";
+  const convert = tauri?.core?.convertFileSrc;
+  if (typeof convert === "function") {
+    // Any path works as a probe: we want the origin it produces, not the path.
+    const probe = convert("0", "dvsframe");
+    const cut = probe.lastIndexOf("/0");
+    if (cut > 0) return probe.slice(0, cut);
+  }
+  // convertFileSrc is part of @tauri-apps/api's core module and is always present in a v2
+  // window. If Tauri ever drops it, WebKitGTK's spelling is the one this app ships on.
+  return "dvsframe://localhost";
 }
 
 export const connection = isTauri
   ? { mode: "tauri", label: "live", detail: "connected to the engine" }
   : { mode: "fixture", label: "fixture", detail: "no engine: showing ui/fixture.json" };
+
+/**
+ * Fixture knobs, read from the query string so an audit is a URL rather than a code edit.
+ * They exist because the interesting half of playback is what happens when something is
+ * missing, and none of those states can be reached in a browser by asking nicely.
+ *
+ *   ?device=none     monitor_play fails, naming audio. This is what the engine really
+ *                    does when there is no output device -- it does not succeed with a
+ *                    null device -- so it is the window's fallback path, not a branch of
+ *                    the happy one.
+ *   ?device=stalled  the stream opens and the device never reports a position. Silence
+ *                    does not do this (silence is samples, and the device consumes them
+ *                    and keeps counting); a device that failed to start does.
+ *   ?frames=http     frame pictures are fetched over HTTP instead of inlined as data
+ *                    URLs. A data: URL is decoded instantly, which is precisely the case
+ *                    the skipped-frame path does not cover; an HTTP request is something
+ *                    a harness can delay, throttle or fail.
+ *   ?dropouts=N      report N audio dropouts, to watch them reach the readout.
+ */
+function fixtureKnobs() {
+  const search = typeof location === "undefined" ? "" : location.search;
+  const params = new URLSearchParams(search);
+  const device = params.get("device") || "";
+  return {
+    device: device === "none" || device === "stalled" ? device : device || "fixture: synthetic tone",
+    frames: params.get("frames") || "data",
+    dropouts: Math.max(0, Number.parseInt(params.get("dropouts") || "0", 10) || 0),
+  };
+}
+
+/** Module scope because devFrame() is synchronous and runs before the bridge is built. */
+const knobs = fixtureKnobs();
 
 // ---------------------------------------------------------------------------------------
 // public API
@@ -74,6 +126,8 @@ async function buildDevBridge() {
     undoStack: [],
     redoStack: [],
     listeners: new Map(),
+    monitor: { playing: false, timer: 0, startedAt: 0, fromFrame: 0, underruns: 0 },
+    prefetches: [],
   };
   devState = state;
 
@@ -86,7 +140,17 @@ async function buildDevBridge() {
     for (const handler of state.listeners.get(event) || []) handler({ event, payload });
   };
 
+  /** A revision bump retires playback, exactly as app.rs does when the watcher fires: the
+   *  mix that was streaming belongs to a document that no longer exists. Emitting
+   *  monitor-ended before document-changed matches the order the window sees them in. */
+  const retire = () => {
+    if (!state.monitor.playing) return;
+    stopMonitor(state);
+    emit("monitor-ended", null);
+  };
+
   const bumped = (op) => {
+    retire();
     state.snapshot.revision += 1;
     emit("document-changed", { revision: state.snapshot.revision });
     return op;
@@ -97,9 +161,16 @@ async function buildDevBridge() {
   const scripted = fixture.scriptedChange;
   if (scripted) {
     setTimeout(() => {
+      retire();
       applyScripted(state, scripted);
       emit("document-changed", { revision: state.snapshot.revision });
     }, scripted.afterMs ?? 3500);
+  }
+
+  // The live objects an audit needs: which prefetches were asked for, and what the
+  // simulated device thinks it is doing.
+  if (typeof window !== "undefined") {
+    window.dvsFixture = { knobs, prefetches: state.prefetches, monitor: state.monitor };
   }
 
   return {
@@ -130,11 +201,47 @@ async function buildDevBridge() {
         }
         case "apply_op":
           return bumped(applyOp(state, args.op, args.args || {}));
+        case "monitor_play": {
+          const fromFrame = Math.max(0, Math.round(Number(args.fromFrame) || 0));
+          if (fromFrame >= state.snapshot.frameCount) {
+            throw new Error("the playhead is at the end of the sequence");
+          }
+          if (knobs.device === "none") {
+            throw new Error("no audio device: cpal found no default output");
+          }
+          state.monitor.fromFrame = fromFrame;
+          // "stalled" opens the stream and never reports, which is what a device that
+          // failed to start looks like from here.
+          if (knobs.device !== "stalled") startMonitor(state, emit, fromFrame);
+          return { playing: true, rate: 48000, channels: 2, device: deviceName(), fromFrame };
+        }
+        case "monitor_stop":
+          stopMonitor(state);
+          return null;
+        case "monitor_state":
+          return {
+            playing: state.monitor.playing,
+            frame: monitorFrame(state),
+            device: deviceName(),
+            underruns: state.monitor.underruns,
+          };
+        case "peaks":
+          return synthPeaks(state.snapshot, Math.min(4096, Math.max(16, Number(args.buckets) || 2048)));
+        case "prefetch": {
+          state.prefetches.push({
+            fromFrame: Math.round(Number(args.fromFrame) || 0),
+            count: Math.round(Number(args.count) || 0),
+            at: performance.now(),
+          });
+          while (state.prefetches.length > 256) state.prefetches.shift();
+          return null;
+        }
         case "undo": {
           const previous = state.undoStack.pop();
           if (!previous) return null;
           state.redoStack.push(snapshotOf(state));
           restore(state, previous);
+          retire();
           state.snapshot.revision += 1;
           emit("document-changed", { revision: state.snapshot.revision });
           return `undid ${previous.label}`;
@@ -144,6 +251,7 @@ async function buildDevBridge() {
           if (!next) return null;
           state.undoStack.push(snapshotOf(state));
           restore(state, next);
+          retire();
           state.snapshot.revision += 1;
           emit("document-changed", { revision: state.snapshot.revision });
           return `redid ${next.label}`;
@@ -581,12 +689,113 @@ function describe(snapshot, findings) {
   return lines.join("\n") + "\n";
 }
 
+// --- the simulated device -------------------------------------------------------------------
+//
+// Real time, real 20 Hz reporting, and the same event names and payloads app.rs emits.
+// The window cannot tell the difference, which is the point: the clock logic -- the one
+// piece of this UI that can be wrong in a way nobody notices until playback drifts -- gets
+// audited in a browser rather than only in a built window.
+
+/** app.rs ticks its reporter every 50 ms. Matching it matters: the window interpolates
+ *  between positions, and the interpolation is only honest if the gap is the real one. */
+const POSITION_MS = 50;
+
+/** The name the engine would report. "stalled" is a fixture state, not a device name. */
+function deviceName() {
+  return knobs.device === "stalled" ? "fixture: a device that will not start" : knobs.device;
+}
+
+function startMonitor(state, emit, fromFrame) {
+  stopMonitor(state);
+  const monitor = state.monitor;
+  const fps = ratio(state.snapshot.fps);
+  const frameCount = state.snapshot.frameCount;
+  monitor.playing = true;
+  monitor.fromFrame = fromFrame;
+  monitor.startedAt = performance.now();
+  monitor.underruns = knobs.dropouts;
+  monitor.timer = setInterval(() => {
+    const frame = monitorFrame(state);
+    emit("monitor-position", { frame, underruns: monitor.underruns });
+    // app.rs stops when the device has played past the end of the sequence, not at the
+    // last frame: the last frame has a duration too.
+    if (frame >= frameCount) {
+      stopMonitor(state);
+      emit("monitor-ended", null);
+    }
+  }, POSITION_MS);
+}
+
+function stopMonitor(state) {
+  clearInterval(state.monitor.timer);
+  state.monitor.timer = 0;
+  state.monitor.playing = false;
+}
+
+/** Where the device has got to: the fixture's whole audio clock, in one line. */
+function monitorFrame(state) {
+  const monitor = state.monitor;
+  if (!monitor.playing) return monitor.fromFrame;
+  const played = (performance.now() - monitor.startedAt) / 1000;
+  return Math.floor(monitor.fromFrame + played * ratio(state.snapshot.fps));
+}
+
+// --- synthetic peaks --------------------------------------------------------------------------
+
+/**
+ * A tone with a shape, bucketed the way dvs_audio buckets a real mix: min and max over
+ * every sample in the bucket, across channels, ignoring mute and solo. A real carrier is
+ * far finer than a bucket, so what a bucket holds is the envelope -- which is what these
+ * hold. The buckets span the whole sequence, not the clip, because that is the contract
+ * waveform.js reads them under: peaks do not depend on the zoom or on the cut.
+ */
+function synthPeaks(snapshot, buckets) {
+  const duration = ratio(snapshot.timeline.duration || snapshot.duration) || 1;
+  return snapshot.timeline.rows
+    .filter((row) => row.kind === "audio")
+    .map((row) => {
+      const clips = snapshot.timeline.clips.filter((clip) => clip.track === row.id && clip.enabled);
+      const values = new Array(buckets);
+      let loudest = 0;
+      for (let b = 0; b < buckets; b += 1) {
+        const t = ((b + 0.5) / buckets) * duration;
+        const clip = clips.find((c) => ratio(c.start) <= t && ratio(c.end) > t);
+        if (!clip) {
+          values[b] = [0, 0];
+          continue;
+        }
+        // Edges fade rather than cliff, so the drawing shows a shape a person recognises.
+        const fade = Math.min(1, (t - ratio(clip.start)) / 0.75, (ratio(clip.end) - t) / 0.75);
+        const beat = 0.55 + 0.45 * Math.abs(Math.sin((t * Math.PI) / 1.5));
+        const phrase = 0.5 + 0.5 * Math.sin((t * Math.PI) / 21 + 1.1);
+        const level = 0.86 * fade * beat * (0.45 + 0.55 * phrase);
+        // Asymmetric, the way recorded material is: a waveform drawn from |sample| is a
+        // waveform that cannot show a DC offset or an inverted transient.
+        values[b] = [-level, level * 0.94];
+        if (level > loudest) loudest = level;
+      }
+      return {
+        track: row.id,
+        name: row.name,
+        buckets: values,
+        // Matches dvs_audio::SILENCE_FLOOR_DB, which is what waveform.js expects to read.
+        peakDb: loudest > 0 ? 20 * Math.log10(loudest) : -100,
+      };
+    });
+}
+
 // --- fake frames ---------------------------------------------------------------------------
 
 /** A generated picture, so the viewport is exercised (letterboxing, alt text, cache keys)
  *  without an engine. It draws what the frame *would* contain: the clips live at that
  *  instant, on a slow gradient so scrubbing visibly moves. */
 function devFrame(frameIndex, revision, scale) {
+  if (knobs.frames === "http") {
+    // One real request per frame, the way dvsframe:// works in the window: the same URL
+    // for the same frame, so a re-seek is answered by the browser's cache, and a harness
+    // that wants frames to be slow has something it can actually hold on to.
+    return `frame-fixture.svg?frame=${frameIndex}&rev=${revision}&scale=${scale}`;
+  }
   const snapshot = devState?.snapshot;
   const width = snapshot ? snapshot.size[0] : 1920;
   const height = snapshot ? snapshot.size[1] : 1080;

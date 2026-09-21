@@ -23,7 +23,7 @@ dvs-studio --describe            # the same information as text, no window
 |---|---|
 | Header | project · sequence · size · frame rate · duration · frame count, a status line, and whether it is connected to the engine |
 | Viewport | the composited frame at `--scale`, from the same `dvs-comp::Compositor` that `dvs render` uses |
-| Transport | play/pause, ±1 frame, ±1 second, start/end, a scrubber, timecode and frame index |
+| Transport | play/pause **with sound**, ±1 frame, ±1 second, start/end, a scrubber, timecode and frame index, and a readout naming the clock, the achieved frame rate and any skipped frames |
 | Timeline | one row per track, clips coloured *and labelled* by kind, transitions badged, uncovered gaps hatched, markers pinned on the ruler, playhead |
 | Activity | the journal, newest first, with an actor badge (`AGENT` / `YOU` / `AI`), the op, its arguments, the frame a time snapped to, and the local time |
 | Lint | findings grouped by severity; clicking one selects the clip it names |
@@ -63,10 +63,10 @@ Built in, not bolted on:
   `rowheader` ("V1, video track, 3 clips"), a cell per clip whose accessible name is a full
   sentence composed in Rust ("intro, video clip on V1, 0 to 12.012 seconds, plays talk.mp4"),
   and gaps and markers labelled the same way. No `<canvas>` anywhere.
-- **Keyboard-complete.** Every action has a key: `space` play/pause, `←`/`→` a frame,
-  `shift+←/→` a second, `home`/`end`, arrows to move between clips and tracks, `enter` to
-  select, `u` undo, `r` redo, `l` lint, `/` console, `?` help, `escape` to close a dialog and
-  return focus to whatever opened it.
+- **Keyboard-complete.** Every action has a key: `space` or `k` play/pause, `shift+space`
+  play from the start, `←`/`→` or `,`/`.` a frame, `shift+←/→` a second, `home`/`end`,
+  arrows to move between clips and tracks, `enter` to select, `u` undo, `r` redo, `l` lint,
+  `/` console, `?` help, `escape` to close a dialog and return focus to whatever opened it.
 - **Nothing encoded in colour alone.** Clip kind, lint severity and actor each carry a word
   or glyph as well as a hue.
 - **Contrast** at or above 4.5:1 for text and 3:1 for controls, with the measured ratio
@@ -112,6 +112,50 @@ axe-core 4.10.2 reports **0 violations** across six page states (dark, light, af
 edit, both dialogs open, and a 200-clip timeline). The remaining `incomplete` results are
 symbol-only decorations and gradient backdrops that axe declines to judge; each one's
 computed ratio is recorded in `crates/dvs-studio/ui/README.md`.
+
+## Playback
+
+Audio is the master clock. Pressing play mixes PCM in Rust (8-second chunks, refilled when
+the device has under 3 seconds buffered), streams it through `cpal`, and the window advances
+its playhead from the device's own frame counter. Video chasing `performance.now()` while
+sound plays from a device buffer drifts audibly within seconds; following the audio clock is
+the only arrangement that stays in sync, and it is why the transport says *which* clock is
+running.
+
+With no output device, or no audio in the range, the window falls back to a wall clock and
+says so. Frames are prefetched ahead of the playhead — the worker composites speculatively
+whenever its request channel is empty, so an interactive seek always jumps the queue — and
+when a frame is not ready the window holds the previous one and counts a skip rather than
+stalling. The readout is honest about it: `playing · audio clock · 30.6 / 29.97 fps ·
+0 skipped`.
+
+Audio clips draw their waveform from per-track peaks cached per revision. The canvas is
+`aria-hidden`; the peak in dBFS is appended to the clip's accessible name, so the
+information is not carried by the picture alone.
+
+## Layout
+
+Three panes resize: the side column against the viewport and timeline, the viewport against
+the timeline, and the activity feed against lint. Drag the hairline between them, or reach
+it with <kbd>tab</kbd> and move it with the arrows — 16 pixels, <kbd>page up</kbd> /
+<kbd>page down</kbd> for 64, <kbd>end</kbd> for as large as the window allows,
+<kbd>home</kbd> (or a double-click) back to the default. Sizes are remembered in the
+webview's `localStorage`, never in `project.json`: pane furniture belongs to the person
+looking at the window, and an agent reading the document should not find it there.
+
+Each separator is a real `role="separator"` with `aria-valuenow` in pixels and
+`aria-valuemin`/`aria-valuemax` describing the room that is left, announced as, for example,
+"Side panel width 428 pixels". Pixels rather than a percentage of travel: a percentage is
+relative to the window, so the same pane would announce two different numbers at two window
+sizes without anybody having dragged anything.
+
+Two details are load-bearing. The size is read back from the *resolved grid track*, not the
+pane's border box — a pane with a margin measures smaller than its track, and writing that
+number back shrinks it a little on every drag. And the separator's keys call
+`preventDefault`, which is what keeps the window's global handler (where the same arrows
+mean "step one frame" and <kbd>home</kbd>/<kbd>end</kbd> mean "first/last frame") from
+seeking the playhead while you are resizing a pane. Both are covered by
+`scripts/ui-check.mjs`, which drives the real page in headless Chromium.
 
 ## Known environment note
 

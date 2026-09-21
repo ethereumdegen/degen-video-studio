@@ -9,8 +9,10 @@ loads these files as they are, and `tauri.conf.json` points `frontendDist` here.
 | `app.css` | one palette, both colour schemes, measured contrast ratios in the comment beside it |
 | `app.js` | state, transport, activity, lint, console, dialogs, the keyboard model |
 | `timeline.js` | time↔pixel geometry (ported, with its test suite) and the grid that draws the timeline |
+| `waveform.js` | the peaks, drawn per clip into an `aria-hidden` canvas, with the number in the name |
 | `bridge.js` | the only file that knows whether Tauri is there |
 | `fixture.json` | a real three-track project, used when it is not |
+| `frame-fixture.svg` | the picture `?frames=http` serves, so frame loading can be delayed by a harness |
 
 ## Two environments
 
@@ -52,10 +54,23 @@ Then open <http://127.0.0.1:8731/>. Useful query parameters:
 |---|---|
 | `?test=1` | runs the timeline geometry suite and prints the result into the page |
 | `?clips=200` | stretches the fixture to N clips, for measuring the scroll and arrow-navigation floor |
+| `?device=none` | `monitor_play` fails naming audio, as the engine does with no output device |
+| `?device=stalled` | the stream opens and never reports a position: a device that failed to start |
+| `?dropouts=3` | the device reports N audio dropouts, to watch them reach the readout |
+| `?frames=http` | frames are fetched over HTTP instead of inlined as data URLs |
 
-Two globals exist for scripted audits: `window.dvsTimelineTests()` runs the geometry suite
-and returns `{ total, failed, failures }`, and `window.dvsStudio` exposes the live state,
-the `TimelineView` and `setFrame`.
+`?frames=http` exists because a `data:` URL decodes instantly, so nothing in the fixture can
+ever be late and the skipped-frame path cannot be exercised against one. Over HTTP every
+frame is a real request a harness can hold, throttle or fail. Measured with Puppeteer
+request interception, one frame served every 62 ms: the playhead holds 29.99 fps, the
+picture arrives at 16.1 fps, and the readout says
+`playing · audio clock · 16.1 / 29.97 fps · 50 skipped · 11 frames behind`.
+
+Three globals exist for scripted audits: `window.dvsTimelineTests()` runs the geometry suite
+and returns `{ total, failed, failures }`; `window.dvsStudio` exposes the live state, the
+`playback` and `frames` objects, the `TimelineView`, `setFrame`, `userSeek`, `startPlayback`
+and `endPlayback`; and in the fixture `window.dvsFixture` exposes the knobs, the simulated
+device and every `prefetch` the window has asked for.
 
 With axe-core:
 
@@ -110,11 +125,46 @@ unmeasurable.
 Under `prefers-reduced-motion: reduce` the loop never starts and the stylesheet pins
 `--flash-decay: 1`, which turns the fade into an outline that persists until the next edit.
 
+**Audio is the master clock.** The engine mixes the sequence, streams it to a device and
+reports where that device has got to as `monitor-position`, twenty times a second. The
+playhead follows that, and between events it interpolates from the last one with wall time,
+clamped to 120 ms — enough to keep a 30 fps picture smooth on a 20 Hz clock, not enough to
+outlive a device that has stopped reporting. Running the picture off `performance.now()`
+while a device plays at its own rate drifts audibly within seconds.
+
+With no device the command fails and a wall clock takes over; if a stream opens and no
+position arrives within 600 ms, the same. Which clock is running is never hidden: the
+status line announces the handover once, and the readout under the transport says
+`playing · wall clock (no audio device) · 29.9 / 29.97 fps · 0 skipped` for as long as it
+lasts. Playback is forward only — the engine mixes forward, and a reverse transport would
+be a picture with no sound to keep it honest.
+
+**The picture never gates the clock.** Frames are `<img>` objects loaded ahead of the
+playhead (`prefetch` for the engine, a decode queue for the browser). The playhead moves
+when the clock says so and shows whatever has arrived; the readout carries three numbers,
+each meaning one thing: pictures per second, frames the viewer never saw, and how far the
+picture is behind the sound. Two constants hold the queue together and they are a pair —
+at most six requests in flight, and a frame is worth waiting for up to fifteen frames past
+its moment. The queue must be shorter, in time, than that tolerance: longer and every
+request is abandoned a moment before it would have landed, which is the pathological case
+where the renderer is busy all day and the viewport never updates once.
+
+**Waveforms are decoration with a textual equivalent.** One `aria-hidden` canvas per audio
+clip — the only canvas in the window — because a couple of thousand `<div>`s per clip would
+make arrowing through the timeline unusable, and because a waveform tells a screen reader
+nothing a number cannot tell it better. The number is `, peak −1.3 dBFS`, appended to the
+clip's accessible name and to the track's row header. The canvas lives in a 13 px strip
+reserved at the bottom of the cell, out from behind the label: the ink is one colour over
+eight clip fills, and a wash dark enough to read as a waveform drops the label's 4.5:1 to
+about 3:1 on the darker ones. Peaks are per track over the whole sequence, so a zoom is a
+redraw (driven by a `ResizeObserver`), never an IPC round trip.
+
 ## Keyboard
 
-`space` play/pause · `←`/`→` a frame · `shift` a second · `home`/`end` first/last frame ·
-`u` undo · `r` redo · `l` lint · `/` console · `?` help · `escape` closes a dialog and
-returns focus to whatever opened it.
+`space` or `k` play/pause · `shift`+`space` play from the start · `←`/`→` or `,`/`.` a
+frame · `shift`+`←`/`→` a second · `home`/`end` first/last frame · `u` undo · `r` redo ·
+`l` lint · `/` console · `?` help · `escape` closes a dialog and returns focus to whatever
+opened it.
 
 Inside the timeline the grid pattern takes over: `←`/`→` move between cells on a track,
 `↑`/`↓` between tracks, `home`/`end` reach the ends of *this row* (`ctrl` for the first or

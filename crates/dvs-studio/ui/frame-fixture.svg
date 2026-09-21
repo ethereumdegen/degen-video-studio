@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-label="Fixture frame served over HTTP">
+  <!-- The picture ?frames=http serves. It exists so the fixture can hand out a real URL
+       per frame instead of a data: URL: a data: URL decodes instantly, so the window's
+       skipped-frame path can never be exercised against one. A harness that delays or
+       fails these requests is measuring the real <img> loading path, the same one the
+       dvsframe: scheme uses in the window. -->
+  <defs>
+    <linearGradient id="bed" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2030"/>
+      <stop offset="1" stop-color="#090a0d"/>
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bed)"/>
+  <g fill="#f2f5fa" font-family="monospace" text-anchor="middle">
+    <text x="960" y="520" font-size="120">fixture frame</text>
+    <text x="960" y="620" font-size="60" fill="#aab4c4">served over HTTP</text>
+  </g>
+</svg>

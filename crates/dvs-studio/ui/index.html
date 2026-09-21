@@ -69,8 +69,32 @@
             <span class="visually-hidden">Timecode </span><span id="timecode-text">00:00:00:00</span>
             <span class="timecode-frame" id="frame-text">frame 0</span>
           </p>
+
+          <!-- Always answers the three questions playback raises: is it running, which
+               clock is driving it, and what rate it is actually achieving. Deliberately
+               not a live region -- it changes several times a second, and a live region
+               that chatters is one a screen-reader user switches off. The transitions
+               (play, pause, which clock took over, why) are announced once each through
+               the status line at the top of the window instead. -->
+          <p class="playstat" id="play-stat" aria-live="off">
+            <span class="visually-hidden">Playback </span><span id="play-stat-text">stopped · no clock running</span>
+          </p>
         </div>
       </section>
+
+      <!-- Separators are focusable and carry their size as aria-valuetext; splitters.js
+           keeps the value in step with the rendered geometry. An `aria-orientation` of
+           "horizontal" on a separator means it *moves* vertically: the attribute describes
+           the bar, and this bar lies across the window. -->
+      <div
+        class="split split-h"
+        id="split-stage"
+        role="separator"
+        tabindex="0"
+        aria-orientation="horizontal"
+        aria-label="Viewport height"
+        aria-controls="stage-h"
+      ></div>
 
       <section class="timeline" aria-labelledby="timeline-h">
         <div class="section-head">
@@ -95,6 +119,16 @@
         </p>
       </section>
 
+      <div
+        class="split split-v"
+        id="split-side"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-label="Side panel width"
+        aria-controls="activity-h"
+      ></div>
+
       <div class="side">
         <section class="panel activity" aria-labelledby="activity-h">
           <h2 id="activity-h">Activity</h2>
@@ -104,6 +138,16 @@
           <p class="feed-live" id="activity-live" aria-live="polite" aria-atomic="true"></p>
           <ol class="feed" id="activity-list" aria-live="off"></ol>
         </section>
+
+        <div
+          class="split split-h"
+          id="split-activity"
+          role="separator"
+          tabindex="0"
+          aria-orientation="horizontal"
+          aria-label="Activity feed height"
+          aria-controls="lint-h"
+        ></div>
 
         <section class="panel lint" aria-labelledby="lint-h">
           <div class="section-head">
@@ -142,9 +186,11 @@
     <dialog id="dlg-help" aria-labelledby="help-h">
       <h2 id="help-h">Keyboard</h2>
       <dl class="keys">
-        <div><dt><kbd>space</kbd></dt><dd>play or pause</dd></div>
+        <div><dt><kbd>space</kbd> <kbd>k</kbd></dt><dd>play or pause</dd></div>
+        <div><dt><kbd>shift</kbd>+<kbd>space</kbd></dt><dd>play from the start</dd></div>
         <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>step one frame</dd></div>
         <div><dt><kbd>shift</kbd>+<kbd>←</kbd> <kbd>→</kbd></dt><dd>step one second</dd></div>
+        <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>step one frame back or forward</dd></div>
         <div><dt><kbd>home</kbd> <kbd>end</kbd></dt><dd>first or last frame</dd></div>
         <div><dt><kbd>u</kbd></dt><dd>undo</dd></div>
         <div><dt><kbd>r</kbd></dt><dd>redo</dd></div>
@@ -152,6 +198,14 @@
         <div><dt><kbd>/</kbd></dt><dd>focus the command console</dd></div>
         <div><dt><kbd>?</kbd></dt><dd>this help</dd></div>
         <div><dt><kbd>escape</kbd></dt><dd>close a dialog and return focus to what opened it</dd></div>
+      </dl>
+      <h3>Pane separators</h3>
+      <dl class="keys">
+        <div><dt><kbd>tab</kbd></dt><dd>reach a separator; drag it with the pointer too</dd></div>
+        <div><dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>move it 16 pixels</dd></div>
+        <div><dt><kbd>page up</kbd> <kbd>page down</kbd></dt><dd>move it 64 pixels</dd></div>
+        <div><dt><kbd>home</kbd></dt><dd>back to the default size (double-click does the same)</dd></div>
+        <div><dt><kbd>end</kbd></dt><dd>as large as the window allows</dd></div>
       </dl>
       <h3>Inside the timeline</h3>
       <dl class="keys">
@@ -165,6 +219,11 @@
       <p class="hint">
         The timeline is a grid, so while focus is inside it <kbd>home</kbd> and
         <kbd>end</kbd> mean “this row” rather than “this sequence”.
+      </p>
+      <p class="hint">
+        Playback runs forward only. The engine mixes audio forward, so a reverse transport
+        would be a picture with no sound to keep it honest; step back a frame at a time
+        with <kbd>,</kbd> or <kbd>←</kbd> instead.
       </p>
       <form method="dialog"><button type="submit" id="help-close">Close</button></form>
     </dialog>

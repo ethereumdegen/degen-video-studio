@@ -120,10 +120,10 @@ jobs:
       #
       # Server and audit live in one step on purpose: a `&` in its own step leaves the
       # process to the runner's whims, and a flaky audit is one nobody reads.
-      - name: Serve the frontend and audit it
+      - name: Serve the frontend, audit it, and drive it
         run: |
           set -euo pipefail
-          npm install --no-save @axe-core/cli http-server
+          npm install --no-save @axe-core/cli http-server puppeteer
           npx http-server crates/dvs-studio/ui -p 8173 --silent &
           server=$!
           trap 'kill "$server"' EXIT
@@ -132,3 +132,6 @@ jobs:
             sleep 1
           done
           npx axe http://127.0.0.1:8173 --exit --tags wcag2a,wcag2aa
+          # Behaviour, not just markup: pane separators that drag without drift, keys that
+          # move a separator without seeking the playhead, sizes that survive a reload.
+          node scripts/ui-check.mjs http://127.0.0.1:8173

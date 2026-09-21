@@ -150,7 +150,12 @@ passed to ffmpeg explicitly on every decode, and the encoder tags what it wrote.
 P0–P8 of [PLAN.md](PLAN.md) are implemented and tested — document and journal, video render,
 audio, titles and keyframes, inspect, transcripts and captions, the agent surface with the
 segment cache, interop, the optional AI providers — plus P7, the studio window, as a Tauri
-app rather than the originally planned web shell. Not built: release packaging and signing
-(P9), and audio monitoring in the window (playback is picture-only; `cpal` wiring is not
-done). Every crate's tests run against real ffmpeg, real encodes and real `melt`;
-`cargo test --workspace` is green with no warnings.
+app rather than the originally planned web shell. The window plays with sound: the mixer
+feeds a `cpal` stream, the picture follows the *audio* clock rather than wall time, frames
+are rendered ahead of the playhead, and audio clips draw their waveform. CI runs the suite
+on Linux and macOS against real ffmpeg and `melt`, plus an ffmpeg 8/9 matrix and an
+axe-core pass over the window's frontend.
+
+Not built: release bundles and signing (P9) — `cargo install` and the freedesktop entry in
+[`packaging/`](packaging/) are the install path. Every crate's tests run against real
+ffmpeg, real encodes and real `melt`; `cargo test --workspace` is green with no warnings.
