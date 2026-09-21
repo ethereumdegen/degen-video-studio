@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "identifier": "studio.degen.dvs",
   "build": {
-    "frontendDist": "../dvs-studio/ui"
+    "frontendDist": "ui"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "dvs studio",
@@ -19,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' dvsframe: http://dvsframe.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' dvsframe: http://dvsframe.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
       "assetProtocol": {
         "enable": false
       }

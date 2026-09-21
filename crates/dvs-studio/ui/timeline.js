@@ -45,8 +45,13 @@
 export const RULER_H = 26; // px, the band above the first row
 export const ROW_H = 34; // px, one track row
 export const ROW_GAP = 2; // px, the gutter between rows -- a click here selects nothing
+export const HEAD_W = 92; // px, the sticky track-header lane; matches --head-w in app.css
 export const ZOOM_MIN = 0.25; // px/s
 export const ZOOM_MAX = 400; // px/s
+
+/** Everything the roving tabindex walks: the row header is column zero of its row, so
+ *  arrowing left off the first clip lands on the track and hears its name. */
+const NAVIGABLE = '.tl-cell, .tl-head';
 export const FLASH_SECONDS = 1.2;
 
 /** Fixed label ladder. A computed 10^round(log10 n) offers a 3.16-second grid, which no
@@ -104,11 +109,14 @@ export function clampScroll(scroll, zoom, duration, view) {
  * nothing rather than snapping to the nearest neighbour.
  */
 export function rowAt(y, rowCount) {
+  // This guard is the only thing rejecting the ruler band and anything above the widget.
+  // A `row < 0` check below would shadow it and make it untestable -- a mutation that
+  // deletes this line has to fail a test, or the line is decoration.
   if (y < RULER_H) return null;
   const pitch = ROW_H + ROW_GAP;
   const offset = y - RULER_H;
   const row = Math.floor(offset / pitch);
-  if (row < 0 || row >= rowCount) return null;
+  if (row >= rowCount) return null;
   if (offset - row * pitch >= ROW_H) return null; // in the gutter below that row
   return row;
 }
@@ -255,8 +263,10 @@ export class TimelineView {
   }
 
   get view() {
-    // Scroller-local coordinates: x = 0 is the left edge of the visible strip.
-    return { x: 0, width: this.scroller.clientWidth || 1 };
+    // Scroller-local coordinates. x is HEAD_W, not 0: the sticky track-header lane occupies
+    // the first HEAD_W pixels, so the instant at the left edge of the *time* area sits
+    // there. This is precisely what the geometry model's `view.x` is for.
+    return { x: HEAD_W, width: Math.max(1, this.scroller.clientWidth - HEAD_W) };
   }
 
   get scroll() {
@@ -275,7 +285,7 @@ export class TimelineView {
     this.fps = fpsValue(model.fps || snapshot.fps);
     this.rowCount = model.rows.length;
 
-    const focusedId = document.activeElement?.closest?.(".tl-cell")?.dataset.cellId || null;
+    const focusedId = document.activeElement?.closest?.(NAVIGABLE)?.dataset.cellId || null;
     const flagged = new Set(findings.filter((f) => f.clip).map((f) => f.clip));
 
     this.content.style.setProperty("--duration", String(this.duration));
@@ -443,7 +453,7 @@ export class TimelineView {
   // --- interaction -------------------------------------------------------------------
 
   #onGridPointer(event) {
-    const cell = event.target.closest?.(".tl-cell");
+    const cell = event.target.closest?.(NAVIGABLE);
     if (cell) {
       const found = this.#findCell(cell.dataset.cellId);
       if (found) this.#setActive(found.row, found.col, "focus");
@@ -460,7 +470,7 @@ export class TimelineView {
   }
 
   #onKeyDown(event) {
-    const cell = event.target.closest?.(".tl-cell");
+    const cell = event.target.closest?.(NAVIGABLE);
     if (!cell) return;
     const here = this.#findCell(cell.dataset.cellId);
     if (!here) return;
@@ -560,6 +570,8 @@ export class TimelineView {
 
   /** Bring a cell into the horizontal view without scrollIntoView's vertical surprises. */
   #revealCell(cell) {
+    // The row header is sticky: it is always visible, and it has no time of its own.
+    if (cell.getAttribute("role") === "rowheader") return;
     const t0 = Number.parseFloat(cell.style.getPropertyValue("--t0")) || 0;
     const dur = Number.parseFloat(cell.style.getPropertyValue("--dur")) || 0;
     const view = this.view;
@@ -715,6 +727,7 @@ export function runGeometryTests() {
   check("the gutter selects nothing (2 px)", rowAt(RULER_H + ROW_H + ROW_GAP - 1, 3) === null);
   check("second row is after the gutter", rowAt(RULER_H + ROW_H + ROW_GAP, 3) === 1);
   check("below the last row is nothing", rowAt(RULER_H + 3 * (ROW_H + ROW_GAP), 3) === null);
+  check("above the widget is nothing", rowAt(-5, 3) === null);
 
   // 5. label ladder: on the ladder, monotonic, and never more than eight labels
   let previous = 0;

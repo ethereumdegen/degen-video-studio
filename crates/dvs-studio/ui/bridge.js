@@ -448,14 +448,21 @@ function recomputeFindings(state) {
     }
   }
   for (const gap of snapshot.timeline.gaps) {
-    const covered = snapshot.timeline.clips.some(
-      (clip) =>
-        clip.row !== gap.row &&
-        ratio(clip.start) <= ratio(gap.start) + 1e-9 &&
-        ratio(clip.end) >= ratio(gap.end) - 1e-9,
-    );
-    if (covered) continue;
     const row = snapshot.timeline.rows[gap.row];
+    // A gap only counts when nothing of the *same kind* covers it: a music bed on A1 does
+    // not fill a hole in the picture, and a lower third on V2 does. This mirrors the
+    // engine's `gap` rule, whose whole point is not firing when nothing is wrong.
+    const covered = snapshot.timeline.clips.some((clip) => {
+      const other = snapshot.timeline.rows[clip.row];
+      return (
+        clip.row !== gap.row &&
+        other &&
+        other.kind === row.kind &&
+        ratio(clip.start) <= ratio(gap.start) + 1e-9 &&
+        ratio(clip.end) >= ratio(gap.end) - 1e-9
+      );
+    });
+    if (covered) continue;
     findings.push({
       rule: "gap",
       severity: "warning",

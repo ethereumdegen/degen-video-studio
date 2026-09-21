@@ -53,10 +53,9 @@ impl From<Error> for CommandError {
 
 type CommandResult<T> = std::result::Result<T, CommandError>;
 
-/// Shared application state: one handle, cloned per request.
+/// Shared application state: one worker handle, borrowed per command.
 struct App {
     handle: Handle,
-    options: StudioOptions,
 }
 
 #[tauri::command]
@@ -113,7 +112,6 @@ pub fn run(options: StudioOptions) -> Result<()> {
     tauri::Builder::default()
         .manage(App {
             handle: handle.clone(),
-            options: options.clone(),
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,

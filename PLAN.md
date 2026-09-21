@@ -69,12 +69,25 @@ the same Rust compositor. MLT/FCPXML/OTIO are *exports* for interop, never a ren
 `Project`. The original plan also consumed `dpaint-raster`/`-vector`/`-render`/`-inspect` as git
 dependencies; that was dropped during P1. A git dependency on an unpublished sibling workspace
 buys nothing here: the parts actually needed are text-and-vector rasterization and a perceptual
-diff, which are `resvg`/`usvg`/`fontdb` and `dssim-core` — the same crates dpaint-vector and
-dpaint-inspect are themselves built on — while the raster compositor this engine needs is
+diff, which are `resvg`/`usvg`/`fontdb` and, in the end, a hand-written SSIM (dpaint-inspect's
+`dssim-core` is AGPL-3.0 and this workspace is MIT) — while the raster compositor this engine needs is
 time-aware (keyframes, transitions, decoder-backed layers) rather than a layer stack.
 
 Interop with degen-paint is preserved at the *file* level instead, which is stronger: a title is
 an SVG document, degen-paint writes SVG, and `title.add --svg <file>` takes it verbatim.
+
+**The window is a webview, for accessibility.** `dvs-studio` is a Tauri v2 window with a plain
+HTML frontend — no npm, no bundler, no framework. The reason is not convenience: HTML semantics
+reach the platform accessibility APIs (ATK/Orca on Linux, NSAccessibility/VoiceOver on macOS),
+so a clip is a labelled control a screen reader announces. Measured before choosing, in
+September 2026: iced 0.14 has no AccessKit integration (issue #552, open since 2020, one draft
+PR), GPUI 0.2 has none and 95 direct dependencies, egui's is partial and a custom timeline
+canvas would be one opaque rectangle to it, and Slint's is strong but its licensing sits badly
+in an MIT repo. The webview is the OS's, not a bundled browser.
+
+There is also a path that needs no window: `dvs-studio --describe` prints the same timeline,
+activity and findings as text, and the CLI and MCP surfaces remain the authoritative way to
+*drive* the editor — which is, in practice, the most accessible control plane in the project.
 
 **Time is rational, snapped to the frame grid.** Stored positions are `{num, den}` seconds
 (`num-rational`). Every op snaps to the sequence's frame rate (`30000/1001` is a first-class
@@ -280,7 +293,7 @@ party undoes the other; the GUI watches the directory; `.lock` serializes writer
 ```
   agent ── stdio ─▶ dvs-mcp        (tools from registry)
   agent ── argv ──▶ dvs-cli        (`dvs`, verbs from registry)
-  human ── webview ▶ apps/studio   (Tauri v2 + Vite/TS, wgpu viewport)
+  human ── webview ▶ dvs-studio    (Tauri v2 + plain HTML, accessible by construction)
                      │  every surface calls the same ops
                      ▼
         ┌──────────────────────────────────────────────────────┐
@@ -314,8 +327,7 @@ party undoes the other; the GUI watches the directory; `.lock` serializes writer
 | `dvs-ai` | fal.ai video/image, TTS providers, key resolution, cache, budget, provenance | `reqwest`, `tokio`, `keyring`, `secrecy` |
 | `dvs-cli` | `dvs` binary | `clap`, `indicatif` |
 | `dvs-mcp` | MCP over stdio | `rmcp` |
-| `dvs-view` | wgpu viewport: proxy playback, scrubbing, overlays; consumes `dvs-comp` frames | `wgpu`, `winit`, `cpal` |
-| `apps/studio` | Tauri v2 app; timeline UI in Vite/TS | `tauri` |
+| `dvs-studio` | Tauri v2 window: viewport, timeline, activity feed, lint, op console; one worker thread owning the `Workspace` and a `Compositor`, frames served over a custom URI scheme | `tauri`, `image`, `notify` |
 
 Dependency direction is strictly downward; `core` knows nothing about media.
 
@@ -423,7 +435,7 @@ Each phase ends with a rendered artifact and a passing check, never a claim.
 | **P4 Inspect** | digest, lint (all rules in §5), scene/black/frozen/silence detection, contact sheet, annotate, frame diff | every lint rule has a fixture that triggers it and one that does not; `dvs sheet` on a 3-min fixture in ≤ 5 s using proxies |
 | **P5 Transcript & captions** | `dvs-text`: whisper feature, transcript import, `find`, `cut-words`, `keep-phrases`, caption generate/style/burn, SRT/VTT | `cut-words` on a fixture removes listed fillers with ripple, no gap lint; generated captions have `maxCps ≤ 20` and 0 overlaps |
 | **P6 Agent surface** | `dvs-mcp`, `dvs_apply` batching, segment render cache, `doctor`, structured errors with candidates | change one title in a 10-min project → only its segment re-encodes (log proves it); MCP session drives P0–P5 fixtures end to end with no GUI |
-| **P7 Studio** | Tauri app, timeline UI, wgpu viewport with proxy scrub/playback, audio monitor, shared `history.jsonl` hot-reload | agent edit appears in the GUI within 500 ms; GUI trim shows up in `dvs history` as an op; human undo of an agent op works |
+| **P7 Studio** | Tauri v2 window: viewport, timeline, activity feed, lint, op console, `--describe` text mode; no bundler and no npm; accessible by construction | agent edit appears in the window within 500 ms; a console edit shows up in `dvs history` as a `human` op; human undo of an agent op works; axe-core reports zero violations and `scripts/a11y-tree.py` shows every clip as a labelled control. **Audio monitoring is not in this phase** — playback is picture-only |
 | **P8 Interop & AI** | FCPXML/OTIO/EDL export, MLT import subset, `dvs-ai` (fal video/image, TTS) with budget | FCPXML opens in Final Cut on mac; OTIO round-trips through `otiotool`; `ai.tts` result is a normal audio asset with provenance |
 | **P9 Release** | docs from registry, CI (linux + mac, ffmpeg 7/8/9), signed mac build, Arch/Homebrew packaging | `cargo test` green on both OSes; `brew install`/`pacman` recipes verified |
 

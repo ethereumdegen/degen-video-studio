@@ -1,0 +1,1011 @@
+/* dvs studio — the whole visual layer.
+ *
+ * Order of business here is semantics first, paint second: every rule below styles an
+ * element that already had the right role before it had a colour.
+ */
+
+/* =========================================================================================
+ * Palette
+ *
+ * Measured contrast ratios (sRGB, WCAG 2.x formula), computed rather than eyeballed.
+ * Text needs 4.5:1, UI components and focus indicators need 3:1.
+ *
+ * DARK (default — the viewport shows video, and light chrome around a picture lies about
+ * its exposure):
+ *   --text     #d8dce4 on --bg #111317 .............. 13.53:1   on --surface #1a1d23 12.28:1
+ *   --text-dim #8c95a5 on --surface ................. 5.59:1    on --raised #232730  4.95:1
+ *   --text-faint #848ea4 on --surface ............... 5.13:1    on --raised          4.55:1
+ *   --accent   #4c8dff on --surface .................. 5.27:1
+ *   --playhead #ff6b4a on --bed #0b0c0f .............. 6.94:1   (component, needs 3:1)
+ *   --sev-error   #ff6369 on --surface ............... 5.82:1
+ *   --sev-warning #f5a524 on --surface ............... 8.27:1
+ *   --sev-info    #5ab8db on --surface ............... 7.49:1
+ *   --actor-agent #a58aff on --surface ............... 6.17:1
+ *   --actor-human #2dd4bf on --surface ............... 9.07:1
+ *   --actor-ai    #e07bc8 on --surface ............... 6.30:1
+ *   clip bodies, --clip-ink #07080a on each fill / fill against the bed #0b0c0f:
+ *     video #3b82f6 5.45 / 5.32 · audio #2dd4bf 10.76 / 10.51 · title #f5a524 9.82 / 9.58
+ *     image #a78bfa 7.36 / 7.19 · color #f472b6 7.56 / 7.38 · generator #94a3b8 7.81 / 7.63
+ *     nested #8b5cf6 4.73 / 4.62 · caption #4ade80 11.50 / 11.22 · disabled #6a7385 4.52 / 4.10
+ *
+ * LIGHT (a real alternative, not an inversion accident):
+ *   --text #14171d on --bg #f4f6fa ................... 16.59:1
+ *   --text-dim #4a5260 on --bg ....................... 7.28:1   on --raised #e9edf4 6.71:1
+ *   --text-faint #5c6575 on --bg ..................... 5.43:1   on --raised          5.00:1
+ *   --accent #1a5fd0 on --surface #ffffff ............ 5.85:1
+ *   --sev-error #b4232a 6.53 · --sev-warning #7a4a00 7.48 · --sev-info #0e5f7a 7.15 (on white)
+ *   --actor-agent #5b3bd4 6.95 · --actor-human #0f6b60 6.38 · --actor-ai #9b2d7f 6.83
+ *   clip bodies, white ink on fill / fill against the light bed #d9e0ea:
+ *     video #2d5fb1 6.21 / 4.67 · audio #1e7a70 5.16 / 3.88 · title #9c6b1c 4.63 / 3.49
+ *     image #7865b4 4.86 / 3.66 · color #ae5384 4.81 / 3.62 · generator #6b7685 4.61 / 3.47
+ *     nested #6544b1 6.97 / 5.24 · caption #2e804d 4.87 / 3.67
+ *
+ * FOCUS is a two-tone ring — a coloured outline with a contrasting halo — because no single
+ * colour can hold 3:1 against a dark bed *and* eight saturated clip bodies. Dark theme:
+ * #ffd166 ring on a #07080a halo (13.56:1 between them, halo ≥4.6:1 against every clip
+ * fill). Light theme: #0b3f9e ring on a #ffffff halo (9.46:1, and the ring is 7.12:1
+ * against the bed). One of the two edges always clears 3:1 against whatever is behind it.
+ *
+ * Nothing is encoded by colour alone: clip kind carries a glyph and the kind word, lint
+ * severity carries a glyph and the severity word, actor badges carry the actor's name.
+ * ========================================================================================= */
+
+:root {
+  color-scheme: dark light;
+
+  --bg: #111317;
+  --surface: #1a1d23;
+  --raised: #232730;
+  --bed: #0b0c0f;
+  --line: #2f3540;
+
+  --text: #d8dce4;
+  /* 6.03:1 on --surface, 5.34:1 on --raised, and 4.80:1 on the accent-washed background
+   * of a fresh activity row (#222f46), which is the tightest place it appears. */
+  --text-dim: #929bab;
+  --text-faint: #848ea4;
+
+  --accent: #4c8dff;
+  --accent-soft: rgba(76, 141, 255, 0.16);
+  --playhead: #ff6b4a;
+  --flash: #ffe28a;
+  --flash-wash: rgba(255, 226, 138, 0.26);
+  --gap-wash: rgba(255, 99, 105, 0.14);
+  --gap-stripe: rgba(255, 99, 105, 0.34);
+
+  --sev-error: #ff6369;
+  --sev-warning: #f5a524;
+  --sev-info: #5ab8db;
+
+  --actor-agent: #a58aff;
+  --actor-human: #2dd4bf;
+  --actor-ai: #e07bc8;
+
+  --clip-ink: #07080a;
+  --clip-chip: #f2f5fa; /* badge backing on a clip body; ink on it measures 18.33:1 */
+  --clip-video: #3b82f6;
+  --clip-audio: #2dd4bf;
+  --clip-title: #f5a524;
+  --clip-image: #a78bfa;
+  --clip-color: #f472b6;
+  --clip-generator: #94a3b8;
+  --clip-nested: #8b5cf6;
+  --clip-caption: #4ade80;
+  --clip-disabled: #6a7385;
+
+  --focus: #ffd166;
+  --focus-halo: #07080a;
+
+  --radius: 6px;
+  --row-h: 34px;
+  --row-gap: 2px;
+  --ruler-h: 26px;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Cantarell, "Helvetica Neue", sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f6fa;
+    --surface: #ffffff;
+    --raised: #e9edf4;
+    /* The frame well and the timeline bed stay dark in both themes: they sit behind
+     * picture, and a light surround misrepresents the exposure of what it surrounds. */
+    --bed: #d9e0ea;
+    --line: #c3ccda;
+
+    --text: #14171d;
+    --text-dim: #4a5260;
+    --text-faint: #5c6575;
+
+    --accent: #1a5fd0;
+    --accent-soft: rgba(26, 95, 208, 0.12);
+    --playhead: #b3300f;
+    /* The flash ring is drawn on a clip body, and light-theme clip bodies are dark, so
+     * the ring stays bright here: 3.62:1 against the worst of the eight fills. */
+    --flash: #ffe28a;
+    --flash-wash: rgba(245, 165, 36, 0.3);
+    --gap-wash: rgba(180, 35, 42, 0.12);
+    --gap-stripe: rgba(180, 35, 42, 0.3);
+
+    --sev-error: #b4232a;
+    --sev-warning: #7a4a00;
+    --sev-info: #0e5f7a;
+
+    --actor-agent: #5b3bd4;
+    --actor-human: #0f6b60;
+    --actor-ai: #9b2d7f;
+
+    --clip-ink: #ffffff;
+    --clip-chip: #14171d; /* 17.02:1 against --clip-ink in this theme */
+    --clip-video: #2d5fb1;
+    --clip-audio: #1e7a70;
+    --clip-title: #9c6b1c;
+    --clip-image: #7865b4;
+    --clip-color: #ae5384;
+    --clip-generator: #6b7685;
+    --clip-nested: #6544b1;
+    --clip-caption: #2e804d;
+    --clip-disabled: #4f5866;
+
+    --focus: #0b3f9e;
+    --focus-halo: #ffffff;
+  }
+}
+
+/* ========================================================================================= */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--sans);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+h1 {
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  margin: 0;
+  color: var(--text);
+}
+
+h2 {
+  font-size: 13px;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-dim);
+}
+
+h3 {
+  font-size: 12px;
+  margin: 12px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+code,
+kbd,
+pre,
+.timecode,
+.tl-tick {
+  font-family: var(--mono);
+}
+
+kbd {
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -48px;
+  z-index: 20;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  transition: top 120ms ease;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
+/* One focus treatment everywhere. */
+:is(a, button, input, [tabindex], [role="gridcell"], [role="rowheader"]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 4px var(--focus-halo);
+  z-index: 6;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+input[type="text"] {
+  font: 13px/1.4 var(--mono);
+  color: var(--text);
+  background: var(--bed);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+}
+
+input[type="text"]::placeholder {
+  color: var(--text-faint);
+}
+
+input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+/* --- header ------------------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.facts {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  flex-wrap: wrap;
+}
+
+.fact {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.facts dt {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.facts dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.status {
+  margin: 0;
+  flex: 1 1 260px;
+  min-width: 200px;
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+}
+
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.conn-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  border: 1px solid var(--text-dim);
+}
+
+.conn[data-mode="tauri"] .conn-dot {
+  background: var(--actor-human);
+}
+
+.conn[data-mode="fixture"] .conn-dot {
+  background: var(--sev-warning);
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* --- layout ------------------------------------------------------------------------- */
+
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(160px, 1fr) auto auto;
+  grid-template-areas:
+    "stage side"
+    "timeline side"
+    "console side";
+  gap: 10px;
+  padding: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.stage {
+  grid-area: stage;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 0;
+}
+
+.timeline {
+  grid-area: timeline;
+}
+
+.side {
+  grid-area: side;
+  display: grid;
+  grid-template-rows: minmax(120px, 1fr) minmax(120px, auto);
+  gap: 10px;
+  min-height: 0;
+}
+
+.console {
+  grid-area: console;
+}
+
+@media (max-width: 900px) {
+  main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "stage" "timeline" "side" "console";
+  }
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.hint {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.empty {
+  color: var(--text-dim);
+  margin: 4px 0;
+}
+
+/* --- viewport ------------------------------------------------------------------------ */
+
+.frame-well {
+  position: relative;
+  background: #0b0c0f; /* always dark: it is a letterbox, not a panel */
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The picture fills the well exactly and letterboxes inside it. `max-height: 100%` is not
+ * enough: in a grid row the percentage has nothing definite to resolve against, so the
+ * <img> keeps its intrinsic box, overflows (clipped, so it looks fine) and silently sits
+ * on top of the controls beneath it. Pinning to the well removes the whole question. */
+.frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.scrub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 260px;
+  min-width: 180px;
+}
+
+.scrub label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.scrub input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--accent);
+  height: 24px;
+}
+
+.timecode {
+  margin: 0;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 15px;
+}
+
+.timecode-frame {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* --- timeline ------------------------------------------------------------------------- */
+
+.tl-scroller {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 260px;
+  background: var(--bed);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.tl-content {
+  --pps: 12; /* pixels per second: the one property a zoom writes */
+  /* The track headers are a sticky lane at the left. Time zero starts to the right of it,
+   * so a clip at 0 is never hidden underneath the header that names its track. This is
+   * `view.x` in the geometry model. */
+  --head-w: 92px;
+  --duration: 0;
+  --flash-decay: 0;
+  position: relative;
+  /* Half a viewport of run-out past the end, so the last clip can be pulled off the edge. */
+  width: calc(var(--head-w) + var(--duration) * var(--pps) * 1px + 50%);
+  min-width: 100%;
+  padding-bottom: 4px;
+}
+
+.tl-ruler {
+  position: relative;
+  height: var(--ruler-h);
+  background-color: var(--bed);
+  border-bottom: 1px solid var(--line);
+}
+
+.tl-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(calc(var(--head-w) + var(--t0) * var(--pps) * 1px));
+  padding-left: 4px;
+  font-size: 11px;
+  line-height: var(--ruler-h);
+  color: var(--text-dim);
+  border-left: 1px solid var(--line);
+  height: var(--ruler-h);
+  white-space: nowrap;
+  /* The tick paints the bed colour it already sits on. Visually identical, but it means a
+   * contrast checker resolves the label's background directly instead of guessing behind
+   * the marker layer that spans this band. */
+  background-color: var(--bed);
+}
+
+/* The layer is a positioning origin, not a surface: zero area, so only the pins
+ * themselves sit over the ruler. A full-width transparent lid here both swallows pointer
+ * events meant for the band below and makes every ruler label look "obscured" to a
+ * contrast checker. */
+.tl-markers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.tl-marker {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  transform: translateX(calc(var(--head-w) + var(--t0) * var(--pps) * 1px));
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px 0 3px;
+  font-size: 11px;
+  background: var(--raised);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.tl-marker-pin {
+  color: var(--accent);
+}
+
+.tl-grid {
+  position: relative;
+  display: block;
+}
+
+.tl-row {
+  position: relative;
+  height: var(--row-h);
+  margin-bottom: var(--row-gap);
+}
+
+.tl-head {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: var(--head-w);
+  height: var(--row-h);
+  padding: 0 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 12px;
+}
+
+.tl-head-name {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.tl-head-kind {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.tl-cell {
+  position: absolute;
+  top: 0;
+  height: var(--row-h);
+  /* Position and size are pure CSS from --t0/--dur and the container's --pps. A zoom is
+   * one write on .tl-content; this rule re-resolves for every clip without JavaScript
+   * touching a single element. */
+  transform: translateX(calc(var(--head-w) + var(--t0) * var(--pps) * 1px));
+  width: max(3px, calc(var(--dur) * var(--pps) * 1px));
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tl-clip {
+  background: var(--clip-video);
+  color: var(--clip-ink);
+  border: 1px solid rgba(0, 0, 0, 0.45);
+}
+
+.tl-clip[data-kind="video"] { background: var(--clip-video); }
+.tl-clip[data-kind="audio"] { background: var(--clip-audio); }
+.tl-clip[data-kind="title"] { background: var(--clip-title); }
+.tl-clip[data-kind="image"] { background: var(--clip-image); }
+.tl-clip[data-kind="color"] { background: var(--clip-color); }
+.tl-clip[data-kind="generator"] { background: var(--clip-generator); }
+.tl-clip[data-kind="nested"] { background: var(--clip-nested); }
+.tl-clip[data-kind="caption"] { background: var(--clip-caption); }
+
+/* Disabled clips are desaturated *and* hatched *and* say "off": three cues, no colour
+ * dependency, and no way to mistake one for a dark-coloured enabled clip. */
+.tl-clip[data-disabled-clip] {
+  background-color: var(--clip-disabled);
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(0, 0, 0, 0.28) 0 6px,
+    transparent 6px 12px
+  );
+}
+
+.tl-glyph {
+  font-size: 11px;
+  /* No opacity: a translucent glyph over a clip body is a contrast a tool cannot verify
+   * and a reader cannot rely on. */
+}
+
+/* Nothing inside a clip shrinks. The row is laid out at its natural size and the cell's
+ * own overflow:hidden clips the tail, so a narrow clip loses its badges, then its kind
+ * word, and keeps its name -- rather than flex distributing the squeeze and leaving a
+ * one-letter name next to a full-size badge. */
+.tl-label {
+  font-weight: 600;
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-kindword {
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.tl-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--clip-chip);
+  color: var(--clip-ink);
+  flex: 0 0 auto;
+}
+
+/* A gap is hatched, dashed, labelled "gap" and carries an ✖ glyph: four cues, none of
+ * which is the colour. */
+.tl-gap {
+  background-color: var(--gap-wash);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--gap-stripe) 0 8px,
+    transparent 8px 16px
+  );
+  border: 1px dashed var(--sev-error);
+  color: var(--text);
+}
+
+/* Selection paints through an overlay rather than box-shadow, so it cannot collide with
+ * the focus ring's halo -- focus and selection are different things and must be able to
+ * show at the same time. */
+.tl-cell.is-selected {
+  font-weight: 700;
+}
+
+.tl-cell.is-selected::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px var(--accent), inset 5px 0 0 0 var(--accent);
+  pointer-events: none;
+}
+
+.tl-clip.is-flagged {
+  border-color: var(--sev-error);
+  border-width: 2px;
+}
+
+/* The flash. The curve lives in timeline.js (flashDecay, 1 - t^2 over 1.2 s) and is
+ * written to --flash-decay once per animation frame for the whole grid; this overlay is
+ * the paint. Under reduced motion the loop never starts and the property is pinned to 1,
+ * which turns the fade into a persistent outline. */
+.tl-clip.is-touched::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px var(--flash);
+  background: var(--flash-wash);
+  opacity: var(--flash-decay);
+  pointer-events: none;
+}
+
+.tl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--playhead);
+  transform: translateX(calc(var(--head-w) + var(--t0) * var(--pps) * 1px));
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* --- activity ------------------------------------------------------------------------- */
+
+.feed-live {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  min-height: 2.4em;
+  background: var(--raised);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.feed li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px 8px;
+  align-items: baseline;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.feed li.is-fresh {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  padding-left: 6px;
+}
+
+.feed-op {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.feed-summary {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.feed-time {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.badge[data-actor="agent"] { color: var(--actor-agent); }
+.badge[data-actor="human"] { color: var(--actor-human); }
+.badge[data-actor="ai"] { color: var(--actor-ai); }
+
+/* --- lint ------------------------------------------------------------------------------ */
+
+.lint ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#lint-body {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.finding {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 6px;
+  margin-bottom: 2px;
+}
+
+.finding:hover {
+  background: var(--raised);
+  border-color: var(--line);
+}
+
+.finding-target {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.finding-detail {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.sev {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+
+.sev[data-sev="error"] { color: var(--sev-error); }
+.sev[data-sev="warning"], .sev[data-sev="warn"] { color: var(--sev-warning); }
+.sev[data-sev="info"] { color: var(--sev-info); }
+
+/* --- console ---------------------------------------------------------------------------- */
+
+.console {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+#console-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+#console-form label {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+#console-input {
+  flex: 1 1 320px;
+  min-width: 200px;
+}
+
+/* --- dialogs ------------------------------------------------------------------------------ */
+
+dialog {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  max-width: min(860px, 92vw);
+  max-height: 86vh;
+  overflow: auto;
+}
+
+dialog::backdrop {
+  background: rgba(3, 5, 8, 0.6);
+}
+
+.keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 4px 18px;
+  margin: 8px 0 0;
+}
+
+.keys > div {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.keys dt {
+  min-width: 130px;
+}
+
+.keys dd {
+  margin: 0;
+  color: var(--text-dim);
+}
+
+#describe-out {
+  background: var(--bed);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+  max-height: 52vh;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+dialog form[method="dialog"] {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* --- motion ------------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* The "something just changed" flash becomes a static outline that stays until the next
+   * edit, rather than a fade that demands you were looking. */
+  .tl-content {
+    --flash-decay: 1;
+  }
+}

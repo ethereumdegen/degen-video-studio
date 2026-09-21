@@ -63,7 +63,44 @@ ffmpeg, real encodes and real `melt`.
   and a lint that cries wolf on every project stops being read.
 - **Ducking attack and release are not frame-snapped.** They are sidechain time constants
   measured in samples; the frame grid has no meaning there.
-- **P7 (Tauri studio) and P9 (packaging) are not implemented.**
+- **P9 (packaging and signing) is not implemented**, and the studio window has no audio
+  monitoring — playback is picture-only.
+
+### The studio window (P7)
+
+- `dvs-studio`: a native window on a live project — composited viewport, timeline with
+  tracks/clips/transitions/gaps/markers/playhead, the op journal streaming past as edits land,
+  lint findings, and a console running the same ops as the CLI. A console edit is journalled as
+  `human`, so agent and human share one undo stack.
+- Tauri v2 with a plain HTML/CSS/ES-module frontend: no npm, no bundler, no framework.
+- Frames are served over a custom `dvsframe://` URI scheme and PNG-encoded in process, rather
+  than returned from a command: a 1280×720 frame is ~3.5 MB of base64 per scrub tick through
+  the IPC, and as an image the webview caches and decodes it off the main thread.
+- One worker thread owns the `Workspace` and the `Compositor`; frames are cached in an LRU
+  keyed by `(index, revision)`, and the compositor is rebuilt when the document changes so no
+  decoder outlives the edit it was opened against.
+- The project *directory* is watched, debounced at 120 ms: atomic writes replace the inode, so
+  a watch on `project.json` itself goes deaf after the first edit.
+- `dvs-studio --describe` prints the whole window as text.
+
+### Accessibility
+
+Chosen as a requirement, and the reason the view is a webview rather than a Rust-drawn
+toolkit (iced 0.14 has no AccessKit integration, GPUI none, egui partial with an opaque
+canvas, Slint strong but GPL/commercial):
+
+- The timeline is a `role="grid"`: a `rowheader` per track, a cell per clip whose accessible
+  name is composed in Rust ("intro, video clip on V1, 0 to 12.012 seconds, plays talk.mp4"),
+  with gaps and markers labelled the same way. No `<canvas>`.
+- Keyboard-complete, with a visible focus indicator, focus restored after dialogs, and no
+  positive `tabindex`.
+- Nothing encoded in colour alone; text contrast ≥ 4.5:1 and controls ≥ 3:1, ratios recorded
+  beside the palette; dark and light both audited.
+- `prefers-reduced-motion` replaces the change flash with a persistent outline plus "changed"
+  in the clip's accessible name.
+- Verified, not asserted: axe-core 4.10.2 reports 0 violations across six page states, and
+  `scripts/a11y-tree.py` dumps the real window's AT-SPI tree — which is how the live
+  agent-edit loop was proven while the screen was locked.
 
 ### Fixed while integrating
 
@@ -78,3 +115,9 @@ ffmpeg, real encodes and real `melt`.
   now names tracks, and on an empty sequence it names `track.add`.
 - `dvs … --json | head` panicked on the closed pipe instead of exiting.
 - `sheet --width` was documented as cell width and implemented as sheet width.
+- The studio window silently ran on its development fixture instead of the real project: the
+  CSP had no `connect-src ipc: http://ipc.localhost`, so every `invoke` was blocked and the
+  frontend fell back. Caught by reading the window's accessibility tree and noticing the clip
+  names belonged to `ui/fixture.json`. `withGlobalTauri` was missing too.
+- `image`'s PNG encoder panics on a short buffer rather than erroring, which would have taken
+  the window's IPC thread down; the frame path now checks the length itself.

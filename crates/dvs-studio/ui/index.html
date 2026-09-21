@@ -31,7 +31,7 @@
       </p>
 
       <div class="topbar-actions">
-        <button type="button" id="btn-text"><span aria-hidden="true">≡</span> Read as text</button>
+        <button type="button" id="btn-text">Read as text</button>
         <button type="button" id="btn-help"><span aria-hidden="true">?</span> Keyboard help</button>
       </div>
     </header>
@@ -46,15 +46,15 @@
         </div>
 
         <div class="transport" role="group" aria-label="Transport">
-          <button type="button" id="t-home"><span aria-hidden="true">⏮</span> Start</button>
-          <button type="button" id="t-back-sec"><span aria-hidden="true">⏪</span> −1 s</button>
+          <button type="button" id="t-home"><span aria-hidden="true">|◀</span> Start</button>
+          <button type="button" id="t-back-sec"><span aria-hidden="true">◀◀</span> −1 s</button>
           <button type="button" id="t-back-frame"><span aria-hidden="true">◀</span> −1 f</button>
-          <button type="button" id="t-play" aria-pressed="false">
+          <button type="button" id="t-play">
             <span aria-hidden="true" id="t-play-glyph">▶</span> <span id="t-play-text">Play</span>
           </button>
           <button type="button" id="t-fwd-frame"><span aria-hidden="true">▶</span> +1 f</button>
-          <button type="button" id="t-fwd-sec"><span aria-hidden="true">⏩</span> +1 s</button>
-          <button type="button" id="t-end"><span aria-hidden="true">⏭</span> End</button>
+          <button type="button" id="t-fwd-sec"><span aria-hidden="true">▶▶</span> +1 s</button>
+          <button type="button" id="t-end"><span aria-hidden="true">▶|</span> End</button>
 
           <div class="scrub">
             <label for="scrub">Playhead</label>
@@ -76,8 +76,8 @@
         <div class="section-head">
           <h2 id="timeline-h">Timeline</h2>
           <div class="zoom" role="group" aria-label="Zoom">
-            <button type="button" id="zoom-out"><span aria-hidden="true">−</span> Zoom out</button>
-            <button type="button" id="zoom-in"><span aria-hidden="true">+</span> Zoom in</button>
+            <button type="button" id="zoom-out">Zoom out</button>
+            <button type="button" id="zoom-in">Zoom in</button>
             <button type="button" id="zoom-fit">Fit</button>
           </div>
         </div>
@@ -175,7 +175,9 @@
         Everything above, as lines. Select and copy it, or run <code>dvs-studio --describe</code>
         for the same thing without a window.
       </p>
-      <pre id="describe-out" tabindex="0" aria-label="The window as text"></pre>
+      <!-- role="group": a bare <pre> maps to `generic`, and aria-label is prohibited on a
+           generic element. The block is focusable because it scrolls. -->
+      <pre id="describe-out" role="group" tabindex="0" aria-label="The window as text"></pre>
       <form method="dialog"><button type="submit" id="text-close">Close</button></form>
     </dialog>
   </body>
