@@ -1,0 +1,29 @@
+[package]
+name = "dvs-text"
+description = "word-timestamped transcripts, whisper runner and caption generation for degen-video-studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[features]
+default = []
+# Links whisper.cpp through whisper-rs. Off by default: the editor is complete with no
+# models, and a C++/CUDA build should never be the price of installing a video editor.
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+dvs-core.workspace = true
+dvs-media.workspace = true
+dvs-interop.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+whisper-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile.workspace = true

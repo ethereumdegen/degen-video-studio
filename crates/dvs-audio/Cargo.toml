@@ -1,0 +1,24 @@
+[package]
+name = "dvs-audio"
+description = "Sample-exact timeline mixing, ducking, loudness and silence analysis for degen-video-studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+dvs-core.workspace = true
+dvs-media.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ebur128.workspace = true
+rubato.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile.workspace = true

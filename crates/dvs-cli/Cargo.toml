@@ -1,0 +1,40 @@
+[package]
+name = "dvs-cli"
+description = "The dvs command line: every op as a verb, JSON for machines, text for people"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[[bin]]
+name = "dvs"
+path = "src/main.rs"
+
+[dependencies]
+dvs-core.workspace = true
+dvs-media.workspace = true
+dvs-comp.workspace = true
+dvs-audio.workspace = true
+dvs-text.workspace = true
+dvs-interop.workspace = true
+dvs-render.workspace = true
+dvs-inspect.workspace = true
+dvs-ai.workspace = true
+dvs-mcp.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+# Whisper transcription is a compiled C++ dependency (whisper.cpp needs cmake); the editor
+# is complete without it and `transcript.import` accepts word JSON from any ASR. `doctor`
+# reports which half of that an install has.
+whisper = ["dvs-text/whisper"]

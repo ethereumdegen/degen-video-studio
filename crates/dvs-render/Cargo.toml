@@ -1,0 +1,23 @@
+[package]
+name = "dvs-render"
+description = "Segment scheduler, incremental segment cache, chunk encode and mux for degen-video-studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+dvs-core.workspace = true
+dvs-media.workspace = true
+dvs-comp.workspace = true
+dvs-audio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

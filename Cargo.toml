@@ -1,0 +1,86 @@
+[workspace]
+resolver = "2"
+# Members are added as each crate gains a lib target; a listed member without one stops
+# cargo from loading the workspace at all.
+members = [
+    "crates/dvs-core",
+    "crates/dvs-media",
+    "crates/dvs-comp",
+    "crates/dvs-audio",
+    "crates/dvs-text",
+    "crates/dvs-interop",
+    "crates/dvs-render",
+    "crates/dvs-inspect",
+    "crates/dvs-ai",
+    "crates/dvs-mcp",
+    "crates/dvs-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/ethereumdegen/degen-video-studio"
+authors = ["Andrew Mazzola <admazzola@gmail.com>"]
+homepage = "https://github.com/ethereumdegen/degen-video-studio"
+readme = "README.md"
+
+[workspace.dependencies]
+dvs-core = { path = "crates/dvs-core", version = "0.1.0" }
+dvs-media = { path = "crates/dvs-media", version = "0.1.0" }
+dvs-audio = { path = "crates/dvs-audio", version = "0.1.0" }
+dvs-comp = { path = "crates/dvs-comp", version = "0.1.0" }
+dvs-text = { path = "crates/dvs-text", version = "0.1.0" }
+dvs-interop = { path = "crates/dvs-interop", version = "0.1.0" }
+dvs-render = { path = "crates/dvs-render", version = "0.1.0" }
+dvs-inspect = { path = "crates/dvs-inspect", version = "0.1.0" }
+dvs-ai = { path = "crates/dvs-ai", version = "0.1.0" }
+dvs-mcp = { path = "crates/dvs-mcp", version = "0.1.0" }
+dvs-cli = { path = "crates/dvs-cli", version = "0.1.0" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+# chrono04/indexmap2 are schemars' implicit optional-dependency features: without them
+# `DateTime<Utc>` and `IndexMap` in the document model have no JsonSchema impl.
+schemars = { version = "1", features = ["chrono04", "indexmap2"] }
+json-patch = "4"
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+blake3 = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+ulid = "1"
+num-rational = { version = "0.4", features = ["serde"] }
+num-integer = "0.1"
+rayon = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+tiny-skia = "0.12"
+fast_image_resize = { version = "6", features = ["image"] }
+usvg = "0.48"
+resvg = "0.48"
+fontdb = "0.24"
+quick-xml = "0.42"
+roxmltree = "0.21"
+rubato = "5"
+ebur128 = "0.1"
+hound = "3"
+clap = { version = "4", features = ["derive", "string"] }
+crossbeam-channel = "0.5"
+# No dssim-core here: it is AGPL-3.0 and this workspace is MIT. SSIM is a local
+# mean/variance comparison over a luma plane, so dvs-inspect implements it directly.
+tempfile = "3"
+which = "8"
+notify = "8"
+rmcp = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "sync", "time"] }
+# reqwest 0.13 renamed the TLS features: `rustls`, not `rustls-tls`.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+secrecy = "0.10"
+base64 = "0.22"
+whisper-rs = "0.16"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

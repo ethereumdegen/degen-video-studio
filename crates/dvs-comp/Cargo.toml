@@ -1,0 +1,31 @@
+[package]
+name = "dvs-comp"
+description = "Frame compositor, transforms, transitions, titles and effects for degen-video-studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[dependencies]
+dvs-core.workspace = true
+dvs-media.workspace = true
+# Captions burn in through the same SVG path as titles, and the cue layout lives in
+# dvs-text, so there is exactly one text layout implementation in the engine.
+dvs-text.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+fast_image_resize.workspace = true
+usvg.workspace = true
+resvg.workspace = true
+tiny-skia.workspace = true
+fontdb.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# Test fixtures construct `Asset { imported: DateTime<Utc>, .. }`.
+chrono.workspace = true
